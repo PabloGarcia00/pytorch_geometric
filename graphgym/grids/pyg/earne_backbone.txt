@@ -1,0 +1,12 @@
+# --- GraphGym Grid (Strict Format) ---
+# Format: key alias value
+# Key: The config key (e.g., gnn.layer_type)
+# Alias: A shorthand for the filename (e.g., mp)
+# Value: A Python-evaluable list (e.g., ['gcn','gat'])
+# IMPORTANT: EXACTLY 1 space between columns, 0 spaces inside the value!
+
+gnn.layer_type mp ['gcnconv','gatconv','sageconv']
+optim.base_lr lr [0.001,0.0001]
+conv1d_kernel_size k [24,48]
+
+# -------------------------------------

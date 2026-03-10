@@ -11,3 +11,4 @@ from .pooling import *  # noqa
 from .stage import *  # noqa
 from .train import *  # noqa
 from .transform import *  # noqa
+from .metric import *  # noqa

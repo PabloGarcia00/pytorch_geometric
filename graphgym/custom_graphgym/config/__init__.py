@@ -1,8 +1,6 @@
-from os.path import dirname, basename, isfile, join
-import glob
+from torch_geometric.graphgym.config import cfg
+from .earne import set_cfg_earne
+from .example import set_cfg_example
 
-modules = glob.glob(join(dirname(__file__), "*.py"))
-__all__ = [
-    basename(f)[:-3] for f in modules
-    if isfile(f) and not f.endswith('__init__.py')
-]
+set_cfg_earne(cfg)
+set_cfg_example(cfg)

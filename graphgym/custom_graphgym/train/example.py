@@ -25,7 +25,9 @@ def train_epoch(logger, loader, model, optimizer, scheduler):
         loss.backward()
         optimizer.step()
         logger.update_stats(true=true.detach().cpu(),
-                            pred=pred_score.detach().cpu(), loss=loss.item(),
+                            pred=pred_score.detach().cpu(),
+                            mask=batch.mask.detach().cpu(),
+                            loss=loss.item(),
                             lr=scheduler.get_last_lr()[0],
                             time_used=time.time() - time_start,
                             params=cfg.params)
@@ -41,7 +43,9 @@ def eval_epoch(logger, loader, model):
         pred, true = model(batch)
         loss, pred_score = compute_loss(pred, true)
         logger.update_stats(true=true.detach().cpu(),
-                            pred=pred_score.detach().cpu(), loss=loss.item(),
+                            pred=pred_score.detach().cpu(),
+                            mask=batch.mask.detach().cpu(),
+                            loss=loss.item(),
                             lr=0, time_used=time.time() - time_start,
                             params=cfg.params)
         time_start = time.time()
