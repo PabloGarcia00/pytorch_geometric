@@ -1,0 +1,1 @@
+from .squash import *

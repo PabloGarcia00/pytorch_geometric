@@ -1,0 +1,3 @@
+# --- GraphGym MVP Grid ---
+gnn.layer_type mp ['gatconv']
+optim.base_lr lr [0.001,0.0001]

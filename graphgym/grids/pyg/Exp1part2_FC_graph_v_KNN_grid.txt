@@ -1,0 +1,7 @@
+# --- Fully connected graph vs the KNN graph
+# MP means message passing
+# this is done as the KNN graph does not converge
+# against the baseline (MP=0) and standard GNN (MP=2).
+earne_data.graph_mode mode ['spatial_knn','full_graph']
+gnn.layers_mp mp [2,0]
+earne_data.weather_features w [['solar_radiation_avg','solar_radiation_max','sunshine_duration_min','air_temperature','soil_temp_5cm'],[]]

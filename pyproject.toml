@@ -46,6 +46,8 @@ graphgym=[
     "protobuf<4.21",
     "pytorch-lightning",
     "yacs",
+    "pandas",
+    "joblib",
 ]
 modelhub=[
     "huggingface_hub"

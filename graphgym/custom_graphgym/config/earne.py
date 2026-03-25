@@ -18,9 +18,34 @@ def set_cfg_earne(cfg):
     cfg.earne_data.n_user = 10
     cfg.earne_data.base_load = 300
     cfg.earne_data.peak_load = 1500
-    cfg.earne_data.raw_data_path = "datasets/earne/raw/"
-    cfg.earne_data.processed_root = "./datasets/earne/"
+    cfg.earne_data.raw_data_path = "../../exploratory-data-analysis/data/"
+    cfg.earne_data.processed_root = "datasets/earne"
     cfg.earne_data.include_id_path = "three_macs.csv"
+
+    # Hive & Path Configs (Relative to graphgym root)
+    eda_root = "../../exploratory-data-analysis"
+    cfg.earne_data.clean_hive = f"{eda_root}/output/clean_data_hive"
+    cfg.earne_data.weather_hive = f"{eda_root}/output/weather_hive"
+    cfg.earne_data.mapping_csv = f"{eda_root}/output/weather_hive/zip_to_station_mapping.csv"
+    cfg.earne_data.metadata_csv = f"{eda_root}/output/mac_overview_updated.csv"
+    cfg.earne_data.zipcode_coords = f"{eda_root}/assets/zipcode_coordinate.csv"
+
+    # Experiment Configs
+    cfg.earne_data.k_neighbors = 5
+    cfg.earne_data.coastal_zips = [14, 15, 16, 17, 18, 19]
+    cfg.earne_data.arnhem_zips = [68, 69]
+    
+    # Advanced Filtering for Transfer/Ablation Experiments
+    cfg.earne_data.filter_zips = []      # e.g., [68, 69] to isolate Arnhem
+    cfg.earne_data.filter_macs = []      # e.g., ['MAC1', 'MAC2'] for specific transfer sets
+    cfg.earne_data.mask_weather = False  # Information Replacement Test toggle
+    
+    cfg.earne_data.weather_features = [
+        "solar_radiation_avg", "solar_radiation_max", 
+        "sunshine_duration_min", "air_temperature", "soil_temp_5cm"
+    ]
+    cfg.earne_data.temporal_features = ["month", "weekday", "hour"]
+    cfg.earne_data.graph_mode = 'spatial_knn' # 'spatial_knn' or 'full_graph'
 
     # ----------------------------------------------------------------------- #
     # Model options
@@ -39,7 +64,7 @@ def set_cfg_earne(cfg):
     # Train options
     # ----------------------------------------------------------------------- #
     # GraphGym already has a 'cfg.train' node.
-    cfg.train.physics_weight = 0.1
+    cfg.train.physics_weight = 0.0
     cfg.train.train_split = 0.7
     cfg.train.val_split = 0.85
 

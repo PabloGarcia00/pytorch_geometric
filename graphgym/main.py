@@ -48,7 +48,11 @@ if __name__ == '__main__':
         # Print model info
         logging.info(model)
         logging.info(cfg)
-        cfg.params = params_count(model)
+        try:
+            cfg.params = params_count(model)
+        except ValueError:
+            logging.info('LazyModule detected, parameters will be initialized during the first forward pass.')
+            cfg.params = 0
         logging.info('Num parameters: %s', cfg.params)
         train(model, datamodule, logger=True)
 

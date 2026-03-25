@@ -12,6 +12,7 @@ train:
     batch_size: 32
     eval_period: 1
     ckpt_period: 10
+    physics_weight: 0.0
 model:
     type: earne_network
     loss_fun: earne_loss

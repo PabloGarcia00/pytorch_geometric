@@ -237,6 +237,8 @@ class GraphDataset(InMemoryDataset):
 
 @register_loader('earne_disagg')
 def load_earne_disagg(format, name, dataset_dir):
+    if format != 'earne_disagg':
+        return None
     dataset = GraphDataset(
         root=dataset_dir,
         raw_path=cfg.earne_data.raw_data_path,

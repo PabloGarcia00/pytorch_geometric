@@ -1,0 +1,49 @@
+out_dir: results
+num_workers: 4
+dataset:
+  format: earne_loader_new
+  name: spatial_knn
+  dir: datasets/earne
+  task: graph
+  task_type: regression
+  transductive: false
+train:
+  mode: example
+  batch_size: 32
+  eval_period: 1
+  ckpt_period: 10
+  physics_weight: 0.0
+model:
+  type: earne_network
+  loss_fun: earne_loss
+  graph_pooling: add
+gnn:
+  layers_pre_mp: 0
+  layers_mp: 2
+  layers_post_mp: 1
+  dim_inner: 64
+  layer_type: gatconv
+  stage_type: stack
+  batchnorm: false
+  act: relu
+  dropout: 0.1
+  att_heads: 4
+optim:
+  optimizer: adam
+  base_lr: 0.001
+  max_epoch: 100
+  scheduler: cos
+earne_data:
+  cadence_minutes: 15
+  days: 5000 # Use all data
+  n_user: 136 # Use all users
+  raw_data_path: "../../exploratory-data-analysis/output/clean_data_hive"
+  weather_hive: "../../exploratory-data-analysis/output/weather_hive"
+  metadata_csv: "../../exploratory-data-analysis/output/mac_overview_updated.csv"
+  mapping_csv: "../../exploratory-data-analysis/output/weather_hive/zip_to_station_mapping.csv"
+  zipcode_coords: "../../exploratory-data-analysis/assets/zipcode_coordinate.csv"
+  processed_root: "datasets/earne"
+  weather_features: ['solar_radiation_avg', 'solar_radiation_max', 'sunshine_duration_min', 'air_temperature', 'soil_temp_5cm']
+custom_metrics:
+  - earne_mae_load
+  - earne_mae_pv
