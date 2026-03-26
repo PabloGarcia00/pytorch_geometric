@@ -59,6 +59,9 @@ class EARNeGraphDataset(Dataset):
         self.pos = self._bundle['pos'][self.node_indices]
         self.active_macs = [self.master_macs[i] for i in self.node_indices]
         self.active_zips = [self.master_zips[i] for i in self.node_indices]
+        self.timestamps = self._bundle.get('timestamps', None)
+        if self.timestamps is not None:
+            self.timestamps = self.timestamps[:self.limit_t]
         
         # 5. Dynamic Weather Feature Indexing
         master_feats = self._bundle['weather_features']
@@ -260,7 +263,8 @@ class EARNeGraphDataset(Dataset):
             'temporal_data': temp_t,
             'pos': torch.tensor(meta_df[['latitude', 'longitude']].fillna(0).values, dtype=torch.float),
             'macs': master_macs,
-            'zips': meta_df['two_num_zip'].values.tolist()
+            'zips': meta_df['two_num_zip'].values.tolist(),
+            'timestamps': pivot_net.index.tolist()
         }, self.processed_paths[0])
 
 @register_loader('earne_loader_new')

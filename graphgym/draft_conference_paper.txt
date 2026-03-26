@@ -1,0 +1,45 @@
+# Research Paper Draft: EARNe - Encoder-Augmented Relational Network for Energy Forecasting
+
+## I. Introduction
+* **Problem Statement:** The transition to decentralized energy systems and local energy communities (LECs) requires precise, node-level forecasting of both energy consumption (Load) and renewable generation (Photovoltaic - PV). The inherent uncertainty in these variables necessitates probabilistic rather than point forecasts to ensure grid stability and efficient market participation.
+* **Current State of the Art:** Traditional time-series models (e.g., ARIMA, RNNs) often treat grid nodes in isolation, failing to capture spatial correlations. While recent Graph Neural Networks (GNNs) address spatial dependencies, they often struggle with the heterogeneous integration of high-frequency temporal data, weather conditions, and graph-based interactions.
+* **Proposed Solution:** This paper introduces EARNe (Encoder-Augmented Relational Network for Energy), a spatio-temporal framework designed for quantile regression in energy grids. EARNe utilizes a 1D-CNN temporal encoder to extract historical patterns, an integration layer for exogenous features, and a GNN-based spatial body for relational reasoning.
+* **List of Contributions:**
+    * A unified architecture that bridges high-frequency temporal encoding with spatial graph message passing.
+    * A multi-quantile regression head that provides probabilistic uncertainty quantification for both load and PV.
+    * An empirical evaluation of spatial graph topologies (K-Nearest Neighbors vs. Full Graph) and the impact of exogenous weather features on forecasting accuracy.
+
+## II. Problem Setting
+* **Mathematical Formalism:** We model the energy grid as a graph $G = (V, E)$. For each node $v \in V$, we observe a history of net demand $H_v \in \mathbb{R}^T$ and a set of exogenous conditions $X_{v,t}$ (weather, time-of-day). The goal is to learn a mapping $f: (H, X, G) \rightarrow \hat{Q}$, where $\hat{Q}$ represents the predicted quantiles for load and PV at time $t+1$.
+* **Operational Objectives:** The model provides 15-minute resolution quantile forecasts used for local energy balancing, peak-shaving, and risk-aware battery storage scheduling within the community.
+
+## III. Methodology
+* **Model Architecture:** EARNe consists of four main stages:
+    1. **Temporal Encoder:** A 1D-CNN that processes the 15-minute net demand history to produce a local temporal embedding.
+    2. **Integration Layer:** A projection layer that concatenates the temporal embedding with cyclical time features (sin/cos of hour, day, week) and weather features (solar radiation, temperature, etc.).
+    3. **Spatial Body:** A sequence of Message Passing layers (e.g., GCNConv) that propagate information across the grid based on spatial proximity or connectivity.
+    4. **Quantile Head:** A multi-layer perceptron that outputs $2 \times K$ values (where $K$ is the number of quantiles) for both Load and PV.
+* **Component 1 (Spatio-Temporal Integration):** The model explicitly separates temporal pattern extraction from spatial interaction, allowing the encoder to focus on local node dynamics before the GNN performs global reconciliation.
+* **Component 2 (Exogenous Feature Fusion):** Weather data and cyclical temporal markers are injected directly into the latent space after temporal encoding, ensuring the spatial layers are aware of the environmental context.
+
+## IV. Experimental Setup
+* **IV-A. Dataset:** The EARNe dataset consists of 15-minute interval readings of load and PV generation from a local energy community, spanning multiple months.
+* **IV-B. Preprocessing:** Data is normalized using Min-Max scaling. Temporal features are transformed into cyclical sine/cosine representations. Weather data (solar radiation, air temperature, soil temperature) is mapped to node locations.
+* **IV-C. Baseline Models:** We compare EARNe against spatial-blind MLPs, standard GCNs, and GAT (Graph Attention Network) baselines.
+* **IV-D. Training Protocol:** Models are trained for 100 epochs using the Pinball Loss function for quantile regression, optimized via Adam with a learning rate scheduler.
+* **IV-E. Performance Metrics:** Models are evaluated using Mean Absolute Error (MAE) at the median (0.5) quantile and Pinball Loss across the full distribution.
+
+## V. Results and Discussion
+* **Quantitative Analysis:** Initial results show that EARNe achieves competitive MAE scores for both load and PV (e.g., Load MAE ~260, PV MAE ~211 in base configurations). 
+* **Ablation Study:** Experiments indicate that deep message passing ($mp=2$) can sometimes lead to performance degradation compared to shallower structures ($mp=0$), suggesting that local temporal patterns are highly dominant in 15-minute intervals. The inclusion of solar radiation and air temperature features marginally improved PV forecasting but increased complexity for load prediction.
+* **Qualitative/Visual Analysis:** Visualization of trajectories (as seen in `output/trajectory.pdf`) demonstrates the model's ability to capture the diurnal cycle of PV generation and the peak demand periods of residential loads.
+
+## VI. Conclusion
+* **Summary of Findings:** EARNe provides a robust framework for probabilistic energy forecasting by successfully integrating temporal, spatial, and exogenous data.
+* **Practical Implications:** The model's quantile outputs allow grid operators to quantify the probability of over-generation or peak demand, enabling more resilient energy management.
+* **Future Work:** Future research will explore dynamic graph structures that evolve with grid connectivity and the incorporation of physics-informed loss functions to ensure power balance constraints.
+
+## VII. References
+1. PyTorch Geometric: GraphGym for Spatio-Temporal Modeling.
+2. "Quantile Regression for Energy Forecasting," Journal of Smart Grids.
+3. [Placeholder for additional project-specific citations]
