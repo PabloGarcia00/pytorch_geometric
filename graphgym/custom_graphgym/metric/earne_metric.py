@@ -34,7 +34,8 @@ def compute_earne_mae(true_list, pred_list):
     if norm_mode == 'minmax':
         scaler = joblib.load(Path(dataset_dir) / 'scaler.pkl')
         scale = float(scaler.data_range_[0])
-        def denorm(x): return x * scale
+        min_val = float(scaler.data_min_[0])
+        def denorm(x): return x * scale + min_val
     elif norm_mode == 'zero_log':
         from ..loader.graph_dataset import zero_preserved_log_denormalize
         params = torch.load(Path(dataset_dir) / 'norm_params.pt', weights_only=False)

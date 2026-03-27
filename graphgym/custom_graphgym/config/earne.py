@@ -24,8 +24,12 @@ def set_cfg_earne(cfg):
     cfg.earne_data.processed_root = "datasets/earne"
     cfg.earne_data.include_id_path = "three_macs.csv"
 
-    # Hive & Path Configs (Relative to graphgym root, or override with EARNE_DATA_ROOT env var)
-    eda_root = os.environ.get('EARNE_DATA_ROOT', '../../exploratory-data-analysis')
+    # Hive & Path Configs (Relative to project root, or override with EARNE_DATA_ROOT env var)
+    # Default assumes exploratory-data-analysis is a sibling directory to pytorch_geometric
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    eda_root_default = os.path.abspath(os.path.join(project_root, "..", "exploratory-data-analysis"))
+    eda_root = os.environ.get('EARNE_DATA_ROOT', eda_root_default)
+    
     cfg.earne_data.clean_hive = f"{eda_root}/output/clean_data_hive"
     cfg.earne_data.weather_hive = f"{eda_root}/output/weather_hive"
     cfg.earne_data.mapping_csv = f"{eda_root}/output/weather_hive/zip_to_station_mapping.csv"
@@ -51,6 +55,7 @@ def set_cfg_earne(cfg):
     cfg.earne_data.norm_mode = 'minmax'        # 'minmax' or 'zero_log'
     cfg.earne_data.lambda_graph = 0.25         # initial threshold for learned_corr
     cfg.earne_data.dual_read = False
+    cfg.earne_data.zero_id = -50.0             # sentinel for log-normalization
 
     # ----------------------------------------------------------------------- #
     # Model options

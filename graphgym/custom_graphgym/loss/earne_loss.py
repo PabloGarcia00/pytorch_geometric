@@ -24,9 +24,9 @@ def masked_quantile_loss(preds, targets, quantiles, mask):
         
     loss = torch.max(quantiles * errors, (quantiles - 1) * errors)
     
-    # Sum over quantiles, then apply mask
-    # loss.sum(dim=-1) results in [N]
-    masked_loss = (loss.sum(dim=-1) * mask)
+    # Average over quantiles, then apply mask
+    # loss.mean(dim=-1) results in [N]
+    masked_loss = (loss.mean(dim=-1) * mask)
     
     # Return average over non-masked elements
     return masked_loss.sum() / (mask.sum() + 1e-9)
@@ -78,7 +78,10 @@ def earne_loss_complex(pred, true):
     try:
         q50_idx = quantiles.index(0.5)
         pred_net_demand = batch.q_load[:, q50_idx] - batch.q_pv[:, q50_idx]
-        loss_physics = F.mse_loss(pred_net_demand * mask, y_net_demand * mask)
+        
+        # Calculate MSE only on valid (non-masked) entries
+        diff_sq = (pred_net_demand - y_net_demand)**2
+        loss_physics = (diff_sq * mask).sum() / (mask.sum() + 1e-9)
     except (ValueError, IndexError):
         loss_physics = 0.0
 

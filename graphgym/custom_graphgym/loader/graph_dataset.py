@@ -27,11 +27,14 @@ def zero_preserved_log_stats(X):
     nonzero_std[torch.isnan(nonzero_std)]   = 1.0
     return nonzero_mean, nonzero_std
 
-def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, log_output=True, zero_id=-3, shift=1.0):
+def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, log_output=True, zero_id=None, shift=1.0):
     """
     Log-normalise strictly positive values; assign zero_id sentinel to all
     non-positive values (zero and negative net demand both map to zero_id).
     """
+    if zero_id is None:
+        zero_id = cfg.earne_data.zero_id
+        
     if isinstance(X, torch.Tensor):
         Y = X.clone()
     else:
@@ -44,13 +47,21 @@ def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, log_output=True, 
     Y_res[is_special] = zero_id
     return Y_res
 
-def zero_preserved_log_denormalize(Y, nonzero_mean, nonzero_std, log_input=True, zero_id=-3, shift=1.0):
+def zero_preserved_log_denormalize(Y, nonzero_mean, nonzero_std, log_input=True, zero_id=None, shift=1.0):
+    if zero_id is None:
+        zero_id = cfg.earne_data.zero_id
+        
     X = Y.clone()
-    is_special = (X == zero_id)
-    X[is_special] = 0.0
+    # "Snap-to-zero": Neural networks rarely hit an exact sentinel.
+    # We treat anything within a reasonable buffer of the zero_id as 0.0.
+    # Data values start around -45, sentinel is at -50. Buffer of 2.0 is safe.
+    is_special = (X < zero_id + 2.0)
+    
     X_log = X if log_input else torch.log(X)
     X_log = (X_log - shift) * nonzero_std + nonzero_mean
     X_res = torch.exp(X_log)
+    
+    # Force the snap
     X_res[is_special] = 0.0
     return X_res
 

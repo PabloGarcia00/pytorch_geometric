@@ -103,7 +103,8 @@ class EARNeNetwork(nn.Module):
             # Dynamic adjacency based on correlation of histories
             # raw_x should be [N, T]
             edge_index_dynamic, _ = self.graph_builder.build_graph(
-                raw_x, lambda_threshold=self.lambda_threshold
+                raw_x, lambda_threshold=self.lambda_threshold,
+                batch_vec=batch.batch
             )
             # Convert dense adjacency to sparse edge_index for PyG convs
             # Note: nonzero() returns indices of entries != 0

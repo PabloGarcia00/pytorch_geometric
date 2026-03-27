@@ -12,6 +12,7 @@ class GraphBuilder:
         net_demand: torch.Tensor,
         window: int = 10,
         lambda_threshold: Optional[torch.Tensor] = None,
+        batch_vec: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         N, T = net_demand.shape
         device = net_demand.device
@@ -33,6 +34,12 @@ class GraphBuilder:
         eff_T = recent_data.shape[1]
         corr = torch.matmul(norm_centered, norm_centered.T) / (eff_T - 1)
         abs_corr = torch.abs(corr)
+
+        # Apply batch mask to avoid cross-graph connections
+        if batch_vec is not None:
+            # batch_vec: [N]
+            mask_batch = (batch_vec.unsqueeze(0) == batch_vec.unsqueeze(1))
+            abs_corr = abs_corr * mask_batch
 
         # Differentiable thresholding via Sigmoid relaxation when threshold is a Parameter
         if lambda_threshold is not None:

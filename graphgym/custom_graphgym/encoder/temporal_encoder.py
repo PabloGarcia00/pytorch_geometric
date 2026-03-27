@@ -25,8 +25,9 @@ class EARNeTemporalEncoder(nn.Module):
         self.encoder = nn.Sequential(
             nn.Conv1d(self.dim_in, 16, kernel_size=self.kernel_size, padding='same'),
             nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),
             nn.Flatten(),
-            nn.Linear(16 * self.seq_len, emb_dim),
+            nn.Linear(16, emb_dim),
             nn.ReLU()
         )
 
