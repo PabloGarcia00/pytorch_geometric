@@ -13,6 +13,63 @@ from itertools import permutations
 from scipy.spatial import distance_matrix
 
 # ==========================================
+# 0. NORMALIZATION UTILITIES
+# ==========================================
+def zero_preserved_log_stats(X):
+    Y = np.copy(X)
+    is_zero = (Y == 0)
+    Y[is_zero] = np.nan
+    Y_log = np.log(Y)
+    nonzero_mean = torch.tensor(np.nanmean(Y_log, axis=0, keepdims=True), dtype=torch.float)
+    nonzero_std = torch.tensor(np.nanstd(Y_log, axis=0, keepdims=True), dtype=torch.float)
+    nonzero_mean[torch.isnan(nonzero_mean)] = 0
+    nonzero_std[nonzero_std == 0] = 1.0
+    nonzero_std[torch.isnan(nonzero_std)] = 1.0
+    return nonzero_mean, nonzero_std
+
+def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, log_output=True, zero_id=-3, shift=1.0):
+    """
+    X: Input numpy array or torch tensor.
+    log_output: If True, returns Y_log. If False, returns exp(Y_log).
+    """
+    if isinstance(X, torch.Tensor):
+        Y = X.clone()
+    else:
+        Y = torch.tensor(X, dtype=torch.float)
+    
+    is_zero = (Y == 0)
+    Y[is_zero] = 1.0 # Temporary to avoid log(0)
+    Y_log = torch.log(Y)
+    Y_log = (Y_log - nonzero_mean) / nonzero_std + shift
+    
+    if log_output:
+        Y_res = Y_log
+    else:
+        Y_res = torch.exp(Y_log)
+        
+    Y_res[is_zero] = zero_id
+    return Y_res
+
+def zero_preserved_log_denormalize(Y, nonzero_mean, nonzero_std, log_input=True, zero_id=-3, shift=1.0):
+    """
+    Y: Input normalized tensor.
+    log_input: If True, assumes Y is in log-space.
+    """
+    X = Y.clone()
+    is_zero = (X == zero_id)
+    X[is_zero] = 0.0 # Temporary
+    
+    if log_input:
+        X_log = X
+    else:
+        X_log = torch.log(X)
+        
+    X_log = (X_log - shift) * nonzero_std + nonzero_mean
+    X_res = torch.exp(X_log)
+    X_res[is_zero] = 0.0
+    return X_res
+
+# ==========================================
 # 1. EARNe GRAPH DATASET (MASTER BUNDLE)
 # ==========================================
 class EARNeGraphDataset(Dataset):
@@ -28,7 +85,38 @@ class EARNeGraphDataset(Dataset):
         
         # 1. Load the Master Bundle
         self._bundle = torch.load(self.processed_paths[0], weights_only=False)
+
+        # 1a. Validate bundle structure
+        import warnings
+        required_keys = [
+            'net_scaled', 'load_scaled', 'pv_scaled', 'mask_raw',
+            'weather_data', 'weather_features', 'temporal_data',
+            'pos', 'macs', 'zips',
+        ]
+        missing = [k for k in required_keys if k not in self._bundle]
+        if missing:
+            raise KeyError(f"Master bundle is missing keys: {missing}")
         
+        # Dual-read optional for backward compatibility
+        if 'import_scaled' not in self._bundle or 'export_scaled' not in self._bundle:
+            warnings.warn("Bundle missing 'import_scaled' or 'export_scaled'. Run process() to include them.")
+
+        if 'timestamps' not in self._bundle:
+            warnings.warn(
+                "Master bundle has no 'timestamps' key. Re-run process() to include timestamps. "
+                "Prediction timestamps will be unavailable.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        n_macs = len(self._bundle['macs'])
+        n_zips = len(self._bundle['zips'])
+        n_pos = self._bundle['pos'].shape[0]
+        if not (n_macs == n_zips == n_pos):
+            raise ValueError(
+                f"Bundle metadata length mismatch: macs={n_macs}, zips={n_zips}, pos={n_pos}"
+            )
+
         # 2. Extract Master Metadata
         self.master_macs = self._bundle['macs']
         self.master_zips = self._bundle['zips']
@@ -49,6 +137,8 @@ class EARNeGraphDataset(Dataset):
         
         # Sliced views: [T_limit, N_filtered, Features]
         self.net_scaled = self._bundle['net_scaled'][:self.limit_t, self.node_indices]
+        self.import_scaled = self._bundle.get('import_scaled', self.net_scaled)[:self.limit_t, self.node_indices]
+        self.export_scaled = self._bundle.get('export_scaled', self.net_scaled)[:self.limit_t, self.node_indices]
         self.load_scaled = self._bundle['load_scaled'][:self.limit_t, self.node_indices]
         self.pv_scaled = self._bundle['pv_scaled'][:self.limit_t, self.node_indices]
         self.mask_raw = self._bundle['mask_raw'][:self.limit_t, self.node_indices]
@@ -102,8 +192,15 @@ class EARNeGraphDataset(Dataset):
         return mask
 
     def _generate_topology(self):
+        import warnings
         mode = cfg.earne_data.graph_mode
         if mode == 'full_graph':
+            if self.num_nodes > 200:
+                warnings.warn(
+                    f"full_graph with {self.num_nodes} nodes produces "
+                    f"{self.num_nodes ** 2} edges — consider using spatial_knn to avoid GPU OOM.",
+                    stacklevel=2,
+                )
             edges = list(permutations(range(self.num_nodes), 2))
             return torch.tensor(edges, dtype=torch.long).t().contiguous()
         
@@ -129,17 +226,76 @@ class EARNeGraphDataset(Dataset):
     def len(self):
         return self.net_scaled.shape[0] - self.seq_len - 1
 
+    def get_split_indices(self):
+        """
+        Compute chronological train/val/test index splits.
+
+        Three-year rule (Case A):
+            If data spans >= 3 distinct years, the third year onwards is held out as
+            test.  The preceding block is sub-split at ratio
+            cfg.train.train_split / cfg.train.val_split (default ≈ 82%).
+
+        Short-series fallback (Case B):
+            If fewer than 3 years are available (common in pilot/ablation runs with
+            cfg.earne_data.days < 730), the first 67% is used for train+val and the
+            remaining 33% for test.  The same sub-split ratio is applied within the
+            train+val block.
+
+        Returns:
+            train_idx, val_idx, test_idx — three lists of integer sample indices.
+        """
+        n = self.len()
+        train_split = cfg.train.train_split
+        val_split = cfg.train.val_split
+        # Fraction of the train+val block that becomes training
+        tv_train_ratio = train_split / val_split
+
+        if self.timestamps is not None and len(self.timestamps) > self.seq_len:
+            import pandas as pd
+
+            # Map each sample index to its *target* timestamp year
+            sample_years = [
+                pd.Timestamp(self.timestamps[i + self.seq_len]).year
+                for i in range(n)
+            ]
+            unique_years = sorted(set(sample_years))
+
+            if len(unique_years) >= 3:
+                # Case A: chronological 3-year split
+                year3 = unique_years[2]
+                test_start = next(i for i, y in enumerate(sample_years) if y >= year3)
+                train_end = int(test_start * tv_train_ratio)
+                return (
+                    list(range(train_end)),
+                    list(range(train_end, test_start)),
+                    list(range(test_start, n)),
+                )
+
+        # Case B: short / no-timestamp fallback
+        tv_end = int(n * 0.67)
+        train_end = int(tv_end * tv_train_ratio)
+        return (
+            list(range(train_end)),
+            list(range(train_end, tv_end)),
+            list(range(tv_end, n)),
+        )
+
     def get(self, idx):
-        # x: [Nodes, Seq_Len, 1]
-        x = self.net_scaled[idx : idx + self.seq_len].t().unsqueeze(-1)
+        # x: [Nodes, Seq_Len, Dim_In]
+        if cfg.earne_data.get('dual_read', False):
+            x_import = self.import_scaled[idx : idx + self.seq_len].t()
+            x_export = self.export_scaled[idx : idx + self.seq_len].t()
+            x = torch.stack([x_import, x_export], dim=-1)
+        else:
+            x = self.net_scaled[idx : idx + self.seq_len].t().unsqueeze(-1)
         
         target_idx = idx + self.seq_len
         y_load = self.load_scaled[target_idx]
         y_pv = self.pv_scaled[target_idx]
         y_mask = self.mask_raw[target_idx]
         
-        # Quantile Target Packet: [Nodes, 3] -> (Load, PV, Mask)
-        true_packet = torch.stack([y_load, y_pv, y_mask], dim=1)
+        # Quantile Target Packet: [Nodes, 4] -> (Load, PV, Mask, NetDemand)
+        true_packet = torch.stack([y_load, y_pv, y_mask, self.net_scaled[target_idx]], dim=1)
         
         # Weather Processing with "Information Replacement" Toggle
         if self.weather_idx and not cfg.earne_data.mask_weather:
@@ -152,12 +308,14 @@ class EARNeGraphDataset(Dataset):
         t_broadcast = t_step.repeat(self.num_nodes, 1)
         condition_tensor = torch.cat([w_step, t_broadcast], dim=1)
 
+        timestamp = self.timestamps[target_idx] if self.timestamps is not None else None
+
         return Data(
             x=x, y=true_packet, weather=condition_tensor,
-            edge_index=self.edge_index, pos=self.pos, 
+            edge_index=self.edge_index, pos=self.pos,
             macs=self.active_macs, zips=self.active_zips,
-            y_load=y_load, y_pv=y_pv, y_net_demand=self.net_scaled[target_idx], 
-            mask=y_mask, num_nodes=self.num_nodes
+            y_load=y_load, y_pv=y_pv, y_net_demand=self.net_scaled[target_idx],
+            mask=y_mask, num_nodes=self.num_nodes, timestamp=timestamp
         )
 
     def _get_db_connection(self):
@@ -249,14 +407,49 @@ class EARNeGraphDataset(Dataset):
         joblib.dump(weather_scalers, Path(self.root) / 'weather_scaler.pkl')
 
         # Anti-Leakage Scaling (Energy)
-        train_v = np.concatenate([pivot_net.iloc[:train_end].values.flatten(), pivot_load.iloc[:train_end].values.flatten(), pivot_pv.iloc[:train_end].values.flatten()]).reshape(-1, 1)
-        scaler = MinMaxScaler().fit(train_v)
-        joblib.dump(scaler, Path(self.root) / 'scaler.pkl')
+        norm_mode = cfg.earne_data.get('norm_mode', 'minmax')
+        if norm_mode == 'minmax':
+            train_v = np.concatenate([pivot_net.iloc[:train_end].values.flatten(), pivot_load.iloc[:train_end].values.flatten(), pivot_pv.iloc[:train_end].values.flatten()]).reshape(-1, 1)
+            scaler = MinMaxScaler().fit(train_v)
+            joblib.dump(scaler, Path(self.root) / 'scaler.pkl')
+
+            net_scaled = torch.tensor(scaler.transform(pivot_net.fillna(0).values.reshape(-1, 1)).reshape(pivot_net.shape), dtype=torch.float)
+            load_scaled = torch.tensor(scaler.transform(pivot_load.fillna(0).values.reshape(-1, 1)).reshape(pivot_load.shape), dtype=torch.float)
+            pv_scaled = torch.tensor(scaler.transform(pivot_pv.fillna(0).values.reshape(-1, 1)).reshape(pivot_pv.shape), dtype=torch.float)
+            
+            # Dual-read signals (import/export)
+            import_scaled = torch.tensor(scaler.transform(pivot_net.fillna(0).clip(lower=0).values.reshape(-1, 1)).reshape(pivot_net.shape), dtype=torch.float)
+            export_scaled = torch.tensor(scaler.transform((-pivot_net).fillna(0).clip(lower=0).values.reshape(-1, 1)).reshape(pivot_net.shape), dtype=torch.float)
+            
+            norm_params = {'mode': 'minmax'}
+        elif norm_mode == 'zero_log':
+            # Combine all energy data for global stats (to maintain relative scales)
+            train_v = np.concatenate([pivot_net.iloc[:train_end].values.flatten(), pivot_load.iloc[:train_end].values.flatten(), pivot_pv.iloc[:train_end].values.flatten()])
+            nz_mean, nz_std = zero_preserved_log_stats(train_v)
+            
+            net_scaled = zero_preserved_log_normalize(pivot_net.fillna(0).values, nz_mean, nz_std)
+            load_scaled = zero_preserved_log_normalize(pivot_load.fillna(0).values, nz_mean, nz_std)
+            pv_scaled = zero_preserved_log_normalize(pivot_pv.fillna(0).values, nz_mean, nz_std)
+            
+            # Dual-read signals (import/export)
+            import_scaled = zero_preserved_log_normalize(pivot_net.fillna(0).clip(lower=0).values, nz_mean, nz_std)
+            export_scaled = zero_preserved_log_normalize((-pivot_net).fillna(0).clip(lower=0).values, nz_mean, nz_std)
+            
+            norm_params = {
+                'mode': 'zero_log',
+                'nz_mean': nz_mean,
+                'nz_std': nz_std
+            }
+            torch.save(norm_params, Path(self.root) / 'norm_params.pt')
+        else:
+            raise ValueError(f"Unknown norm_mode: {norm_mode}")
 
         torch.save({
-            'net_scaled': torch.tensor(scaler.transform(pivot_net.fillna(0).values.reshape(-1, 1)).reshape(pivot_net.shape), dtype=torch.float),
-            'load_scaled': torch.tensor(scaler.transform(pivot_load.fillna(0).values.reshape(-1, 1)).reshape(pivot_load.shape), dtype=torch.float),
-            'pv_scaled': torch.tensor(scaler.transform(pivot_pv.fillna(0).values.reshape(-1, 1)).reshape(pivot_pv.shape), dtype=torch.float),
+            'net_scaled': net_scaled,
+            'import_scaled': import_scaled,
+            'export_scaled': export_scaled,
+            'load_scaled': load_scaled,
+            'pv_scaled': pv_scaled,
             'mask_raw': torch.tensor(pivot_net.notna().astype(float).values, dtype=torch.float),
             'weather_data': w_tensor_scaled,
             'weather_features': all_weather,
@@ -264,17 +457,16 @@ class EARNeGraphDataset(Dataset):
             'pos': torch.tensor(meta_df[['latitude', 'longitude']].fillna(0).values, dtype=torch.float),
             'macs': master_macs,
             'zips': meta_df['two_num_zip'].values.tolist(),
-            'timestamps': pivot_net.index.tolist()
+            'timestamps': pivot_net.index.tolist(),
+            'norm_params': norm_params
         }, self.processed_paths[0])
 
 @register_loader('earne_loader_new')
 def load_earne_dataset(format, name, dataset_dir):
     dataset = EARNeGraphDataset(root=cfg.earne_data.processed_root, seq_len=cfg.model.seq_len)
     dataset.task = 'graph'
-    n = len(dataset)
-    tr_end, val_end = int(cfg.train.train_split * n), int(cfg.train.val_split * n)
-    idx = np.arange(n)
-    dataset.data.train_graph_index = torch.tensor(idx[:tr_end], dtype=torch.long)
-    dataset.data.val_graph_index = torch.tensor(idx[tr_end:val_end], dtype=torch.long)
-    dataset.data.test_graph_index = torch.tensor(idx[val_end:], dtype=torch.long)
+    train_idx, val_idx, test_idx = dataset.get_split_indices()
+    dataset.data.train_graph_index = torch.tensor(train_idx, dtype=torch.long)
+    dataset.data.val_graph_index = torch.tensor(val_idx, dtype=torch.long)
+    dataset.data.test_graph_index = torch.tensor(test_idx, dtype=torch.long)
     return dataset

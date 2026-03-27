@@ -1,3 +1,5 @@
+import os
+
 from yacs.config import CfgNode as CN
 
 from torch_geometric.graphgym.register import register_config
@@ -22,8 +24,8 @@ def set_cfg_earne(cfg):
     cfg.earne_data.processed_root = "datasets/earne"
     cfg.earne_data.include_id_path = "three_macs.csv"
 
-    # Hive & Path Configs (Relative to graphgym root)
-    eda_root = "../../exploratory-data-analysis"
+    # Hive & Path Configs (Relative to graphgym root, or override with EARNE_DATA_ROOT env var)
+    eda_root = os.environ.get('EARNE_DATA_ROOT', '../../exploratory-data-analysis')
     cfg.earne_data.clean_hive = f"{eda_root}/output/clean_data_hive"
     cfg.earne_data.weather_hive = f"{eda_root}/output/weather_hive"
     cfg.earne_data.mapping_csv = f"{eda_root}/output/weather_hive/zip_to_station_mapping.csv"
@@ -45,7 +47,9 @@ def set_cfg_earne(cfg):
         "sunshine_duration_min", "air_temperature", "soil_temp_5cm"
     ]
     cfg.earne_data.temporal_features = ["month", "weekday", "hour"]
-    cfg.earne_data.graph_mode = 'spatial_knn' # 'spatial_knn' or 'full_graph'
+    cfg.earne_data.graph_mode = 'spatial_knn' # 'spatial_knn', 'full_graph', or 'learned_corr'
+    cfg.earne_data.norm_mode = 'minmax' # 'minmax' or 'zero_log'
+    cfg.earne_data.dual_read = False
 
     # ----------------------------------------------------------------------- #
     # Model options
@@ -55,7 +59,9 @@ def set_cfg_earne(cfg):
     cfg.model.edge_encoder_name = 'none'
     cfg.model.head_name = 'earne_quantile'
     cfg.model.seq_len = 96
+    cfg.model.dim_in = 1
     cfg.conv1d_kernel_size = 48
+
     cfg.model.hidden_channels = 64
     cfg.model.n_quantiles = 3
     cfg.model.quantiles = [0.1, 0.5, 0.9]

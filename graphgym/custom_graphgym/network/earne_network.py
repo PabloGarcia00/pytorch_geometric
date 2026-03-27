@@ -44,6 +44,16 @@ class EARNeNetwork(nn.Module):
         Head = register.head_dict[cfg.model.head_name]
         self.head = Head(dim_in=hidden_channels, dim_out=dim_out)
 
+        # 5. Optional Learnable Graph
+        self.graph_mode = cfg.earne_data.get('graph_mode', 'spatial_knn')
+        if self.graph_mode == 'learned_corr':
+            from custom_graphgym.loader.graph_builder import GraphBuilder
+            lambda_init = cfg.earne_data.get('lambda_graph', 0.25)
+            self.graph_builder = GraphBuilder(lambda_threshold=lambda_init)
+            self.lambda_threshold = nn.Parameter(torch.tensor(lambda_init))
+        else:
+            self.lambda_threshold = None
+
     def build_conv(self, dim_in, dim_out):
         """Standard GNN factory for benchmarks."""
         if self.layer_type == 'gcnconv':
@@ -67,7 +77,18 @@ class EARNeNetwork(nn.Module):
             raise ValueError(f'Spatial layer type "{self.layer_type}" not supported.')
 
     def forward(self, batch):
-        # Step 1: Temporal Encoding (e.g., [N, 96, 1] -> [N, D])
+        # Step 1: Temporal Encoding (e.g., [N, 96, D] -> [N, D_emb])
+        # We need the raw history for learned_corr before it's encoded/flattened
+        if batch.x.dim() == 3:
+            if batch.x.shape[-1] == 2:
+                # dual_read mode: [import, export]
+                # For correlation, we use the net demand equivalent
+                raw_x = batch.x[:, :, 0] - batch.x[:, :, 1]
+            else:
+                raw_x = batch.x.squeeze(-1)
+        else:
+            raw_x = batch.x
+        
         batch = self.encoder(batch)
         
         # Step 2: Integrate Conditions (Weather + Time)
@@ -77,7 +98,18 @@ class EARNeNetwork(nn.Module):
         x = F.relu(self.integration(x))
         
         # Step 3: Spatial Message Passing (Graph structure)
-        edge_index = batch.edge_index
+        if self.graph_mode == 'learned_corr':
+            # Dynamic adjacency based on correlation of histories
+            # raw_x should be [N, T]
+            edge_index_dynamic, _ = self.graph_builder.build_graph(
+                raw_x, lambda_threshold=self.lambda_threshold
+            )
+            # Convert dense adjacency to sparse edge_index for PyG convs
+            # Note: nonzero() returns indices of entries != 0
+            edge_index = edge_index_dynamic.nonzero().t().contiguous()
+        else:
+            edge_index = batch.edge_index
+
         for conv, norm in zip(self.convs, self.norms):
             x_in = x
             x = conv(x, edge_index)
@@ -95,7 +127,7 @@ class EARNeNetwork(nn.Module):
         # Done after head() so q_load/q_pv are attached
         register.batch = batch
 
-        # Ground truths + Mask for regression task
-        true = torch.stack([batch.y_load, batch.y_pv, batch.mask], dim=1)
+        # Ground truths + Mask + NetDemand for regression task
+        true = torch.stack([batch.y_load, batch.y_pv, batch.mask, batch.y_net_demand], dim=1)
         
         return pred, true
