@@ -1,0 +1,14 @@
+# --- Exp2 Functional Check Grid ---
+# Axes: graph topology x normalisation x input mode
+# Fixed: 1 epoch, 365 days (1 year), 50-node label
+# Block 1: single-channel input (net demand only)
+earne_data.graph_mode graph_mode ['spatial_knn','full_graph','learned_corr']
+earne_data.norm_mode norm_mode ['minmax','zero_log']
+earne_data.dual_read dual_read [False]
+model.dim_in dim_in [1]
+
+# Block 2: dual-channel input (import + export split)
+earne_data.graph_mode graph_mode ['spatial_knn','full_graph','learned_corr']
+earne_data.norm_mode norm_mode ['minmax','zero_log']
+earne_data.dual_read dual_read [True]
+model.dim_in dim_in [2]

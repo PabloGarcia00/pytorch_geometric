@@ -237,6 +237,13 @@ class GraphDataset(InMemoryDataset):
 
 @register_loader('earne_disagg')
 def load_earne_disagg(format, name, dataset_dir):
+    import warnings
+    warnings.warn(
+        "The 'earne_disagg' loader (loader/earne.py) is deprecated. "
+        "Use 'earne_loader_new' (loader/graph_dataset.py) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if format != 'earne_disagg':
         return None
     dataset = GraphDataset(

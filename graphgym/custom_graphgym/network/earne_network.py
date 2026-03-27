@@ -11,7 +11,8 @@ from torch_geometric.graphgym.config import cfg
 class EARNeNetwork(nn.Module):
     """
     EARNe Network architecture:
-    1. Temporal Encoder: (1D-CNN) Processes [T, 1] Net Demand History
+    1. Temporal Encoder: (1D-CNN) Processes [T, dim_in] history (1 channel for
+       net demand, 2 channels for import/export when dual_read=True)
     2. Integration: Concatenates Temporal Embedding with [Weather + Time] Conditions
     3. Spatial Body: (GCN, GAT, etc.) Message passing on the graph
     4. Quantile Head: Outputs Load and PV quantiles

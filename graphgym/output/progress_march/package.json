@@ -1,0 +1,19 @@
+{
+  "name": "messm-progress-slides",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "slidev",
+    "build": "slidev build",
+    "export": "slidev export"
+  },
+  "dependencies": {
+    "@slidev/cli": "^52.14.1",
+    "@slidev/theme-default": "^0.25.0",
+    "@slidev/theme-seriph": "^0.25.0",
+    "playwright-chromium": "^1.58.2",
+    "slidev-theme-nord": "^0.0.6"
+  },
+  "devDependencies": {
+    "markdownlint-cli": "^0.48.0"
+  }
+}

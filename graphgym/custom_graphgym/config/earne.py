@@ -47,8 +47,9 @@ def set_cfg_earne(cfg):
         "sunshine_duration_min", "air_temperature", "soil_temp_5cm"
     ]
     cfg.earne_data.temporal_features = ["month", "weekday", "hour"]
-    cfg.earne_data.graph_mode = 'spatial_knn' # 'spatial_knn', 'full_graph', or 'learned_corr'
-    cfg.earne_data.norm_mode = 'minmax' # 'minmax' or 'zero_log'
+    cfg.earne_data.graph_mode = 'spatial_knn'  # 'spatial_knn', 'full_graph', or 'learned_corr'
+    cfg.earne_data.norm_mode = 'minmax'        # 'minmax' or 'zero_log'
+    cfg.earne_data.lambda_graph = 0.25         # initial threshold for learned_corr
     cfg.earne_data.dual_read = False
 
     # ----------------------------------------------------------------------- #
@@ -60,7 +61,7 @@ def set_cfg_earne(cfg):
     cfg.model.head_name = 'earne_quantile'
     cfg.model.seq_len = 96
     cfg.model.dim_in = 1
-    cfg.conv1d_kernel_size = 48
+    cfg.conv1d_kernel_size = 47  # odd kernel avoids redundant zero-padding copy in Conv1d same-padding
 
     cfg.model.hidden_channels = 64
     cfg.model.n_quantiles = 3

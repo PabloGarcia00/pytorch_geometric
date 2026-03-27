@@ -51,29 +51,34 @@ def earne_loss_complex(pred, true):
     # We'll pull from cfg or the global batch if available, 
     # but here we assume the standard pred/true are passed or accessible.
 
-    # For this specific task, we need multiple targets (y_load, y_pv, y_net_demand)
-    # These are usually stored in the batch object.
+    # true: [N, 4] columns -> (y_load, y_pv, mask, net_demand)
+    # pred: [N, 2 * n_quantiles]
+    # q_load / q_pv are also attached to the batch by the head for convenience.
     import torch_geometric.graphgym.register as register
     batch = register.batch if hasattr(register, 'batch') else None
 
     if batch is None:
-        # Fallback if batch isn't globally registered (depends on GraphGym version/setup)
         return torch.tensor(0.0, requires_grad=True, device=pred.device), pred
+
     quantiles = cfg.model.quantiles
     physics_weight = cfg.train.physics_weight
-    
+
+    y_load = true[:, 0]
+    y_pv = true[:, 1]
+    mask = true[:, 2]
+    y_net_demand = true[:, 3]
+
     # 1. Load Loss
-    loss_load = masked_quantile_loss(batch.q_load, batch.y_load, quantiles, batch.mask)
-    
+    loss_load = masked_quantile_loss(batch.q_load, y_load, quantiles, mask)
+
     # 2. PV Loss
-    loss_pv = masked_quantile_loss(batch.q_pv, batch.y_pv, quantiles, batch.mask)
-    
-    # 3. Physics Loss (on the median / 0.5 quantile if available)
-    # We find the index of the 0.5 quantile
+    loss_pv = masked_quantile_loss(batch.q_pv, y_pv, quantiles, mask)
+
+    # 3. Physics Loss (median quantile only)
     try:
         q50_idx = quantiles.index(0.5)
         pred_net_demand = batch.q_load[:, q50_idx] - batch.q_pv[:, q50_idx]
-        loss_physics = F.mse_loss(pred_net_demand * batch.mask, batch.y_net_demand * batch.mask)
+        loss_physics = F.mse_loss(pred_net_demand * mask, y_net_demand * mask)
     except (ValueError, IndexError):
         loss_physics = 0.0
 
