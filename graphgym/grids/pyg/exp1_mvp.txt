@@ -1,9 +1,0 @@
-# --- Experiment 1: Weather Ablation MVP Grid ---
-# Comparing ST-GNN with and without weather features
-# We also test a non-GNN (layers_mp=0) as a baseline
-
-# Case 1: All EDA weather features vs None
-earne_data.weather_features w [['solar_radiation_avg','solar_radiation_max','sunshine_duration_min','air_temperature','soil_temp_5cm'],[]]
-
-# Case 2: ST-GNN vs No-GNN
-gnn.layers_mp mp [2,0]

@@ -1,0 +1,5 @@
+# --- Experiment 2: Extended Grid ---
+earne_data.weather_features w [['solar_radiation_avg','solar_radiation_max','sunshine_duration_min','air_temperature','soil_temp_5cm'],[]]
+gnn.layers_mp mp [2,0]
+earne_data.graph_mode graph_mode ['spatial_knn','full_graph','learned_corr']
+earne_data.norm_mode norm_mode ['minmax','zero_log']
