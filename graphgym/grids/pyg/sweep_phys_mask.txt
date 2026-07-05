@@ -1,0 +1,13 @@
+# Sweep: physics impossibility masking on/off
+# Axes  : 1   Runs: 2
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn_phys.yaml --grid grids/pyg/sweep_phys_mask.txt
+#
+# Base config (earne_gat_knn_phys.yaml) fixes:
+#   physics_weight = 1.0   (load - pv = net_demand constraint active for both runs)
+#   graph_mode     = spatial_knn
+#   layers_mp      = 3
+#
+# alias  meaning
+# mask   earne_data.mask_physics_impossible  (True = drop timesteps where generation_w > inverter_w)
+
+earne_data.mask_physics_impossible mask [True,False]

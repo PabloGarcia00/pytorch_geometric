@@ -1,0 +1,6 @@
+[16:22:18] Starting BiLSTM (50 epochs) ...
+[16:22:18] Starting CVAE (50 epochs) ...
+BiLSTM PID=1819268  CVAE PID=1819270
+Logs: results/bilstm_train.log  results/cvae_train.log
+
+[17:32:05] BiLSTM training done (exit=0)

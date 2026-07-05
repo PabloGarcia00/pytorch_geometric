@@ -1,0 +1,7 @@
+{
+    "model": "bilstm",
+    "pinball_loss_load": 0.10232,
+    "pinball_loss_pv": 0.05995,
+    "mae_load_w": 274.205,
+    "mae_pv_w": 136.416
+}

@@ -1,0 +1,14 @@
+# Sweep: GNN capacity (overparameterisation audit)
+# Axes  : 2   Runs: 9
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn.yaml --grid grids/pyg/sweep_gnn_capacity.txt
+#
+# Current defaults: layers_mp=3, dim_inner=64.
+# Sweeps downward to find the minimum sufficient capacity.
+# layers_post_mp mirrors layers_mp so depth changes are symmetric.
+#
+# alias  meaning
+# mp     gnn.layers_mp        (message-passing depth)
+# dim    gnn.dim_inner        (hidden width; also controls GAT head dim = dim / att_heads)
+
+gnn.layers_mp mp [1,2,3]
+gnn.dim_inner dim [16,32,64]

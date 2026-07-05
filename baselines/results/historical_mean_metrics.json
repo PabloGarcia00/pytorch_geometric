@@ -1,0 +1,7 @@
+{
+    "model": "historical_mean",
+    "pinball_loss_load": 0.32069,
+    "pinball_loss_pv": 0.12181,
+    "mae_load_w": 647.242,
+    "mae_pv_w": 435.248
+}

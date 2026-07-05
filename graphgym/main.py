@@ -3,8 +3,11 @@ import os
 
 import custom_graphgym  # noqa, register custom modules
 import torch
+from custom_graphgym.train.earne_train import train
 
 from torch_geometric import seed_everything
+from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+from torch_geometric.data.storage import GlobalStorage
 from torch_geometric.graphgym.cmd_args import parse_args
 from torch_geometric.graphgym.config import (
     cfg,
@@ -15,12 +18,20 @@ from torch_geometric.graphgym.config import (
 )
 from torch_geometric.graphgym.logger import set_printing
 from torch_geometric.graphgym.model_builder import create_model
-from torch_geometric.graphgym.train import GraphGymDataModule, train
+from torch_geometric.graphgym.train import GraphGymDataModule
 from torch_geometric.graphgym.utils.agg_runs import agg_runs
 from torch_geometric.graphgym.utils.comp_budget import params_count
 from torch_geometric.graphgym.utils.device import auto_select_device
 
-if __name__ == '__main__':
+torch.serialization.add_safe_globals(
+    [DataEdgeAttr, DataTensorAttr, GlobalStorage]
+)
+
+torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision("high")
+torch.backends.cudnn.allow_tf32 = True  # enables TF32 for Conv1d/Conv2d
+
+if __name__ == "__main__":
     # Load cmd line args
     args = parse_args()
     # Load config file
@@ -39,16 +50,23 @@ if __name__ == '__main__':
         auto_select_device()
         # Set machine learning pipeline
         datamodule = GraphGymDataModule()
+
         model = create_model()
         # Print model info
         logging.info(model)
         logging.info(cfg)
-        cfg.params = params_count(model)
-        logging.info('Num parameters: %s', cfg.params)
+        try:
+            cfg.params = params_count(model)
+        except ValueError:
+            logging.info(
+                "LazyModule detected, parameters will be initialized during the first forward pass."
+            )
+            cfg.params = 0
+        logging.info("Num parameters: %s", cfg.params)
         train(model, datamodule, logger=True)
 
     # Aggregate results from different seeds
     agg_runs(cfg.out_dir, cfg.metric_best)
     # When being launched in batch mode, mark a yaml as done
     if args.mark_done:
-        os.rename(args.cfg_file, f'{args.cfg_file}_done')
+        os.rename(args.cfg_file, f"{args.cfg_file}_done")

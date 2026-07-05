@@ -1,0 +1,6 @@
+# --- Test Compatibility Grid ---
+earne_data.graph_mode graph_mode ['spatial_knn','learned_corr']
+earne_data.norm_mode norm_mode ['minmax','zero_log']
+earne_data.days days [3]
+earne_data.n_user n_user [50]
+optim.max_epoch epoch [1]

@@ -1,0 +1,12 @@
+# Sweep: graph topology × message-passing depth
+# Axes  : 2   Runs: 6
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn.yaml --grid grids/pyg/sweep_graph_norm_mp.txt
+# Note  : norm is fixed in the base config; vary norm by swapping base config
+#         (earne_gat_knn.yaml = log1p/ihs,  earne_gat_knn_ihs.yaml = ihs/ihs)
+#
+# alias  meaning
+# graph  earne_data.graph_mode
+# mp     gnn.layers_mp
+
+earne_data.graph_mode graph ['spatial_knn','full_graph','learned_corr']
+gnn.layers_mp mp [3,0]

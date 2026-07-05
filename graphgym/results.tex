@@ -1,0 +1,65 @@
+\begin{table}[htbp]
+\caption{Disaggregation metrics by solar penetration bin}
+\label{tab:disagg_metrics}
+\begin{tabular}{llrrrrrrrr}
+\toprule
+ & target & \multicolumn{4}{r}{load} & \multicolumn{4}{r}{pv} \\
+ & experiment & W+ MP0 & W+ MP3 & W- MP0 & W- MP3 & W+ MP0 & W+ MP3 & W- MP0 & W- MP3 \\
+bin & metric &  &  &  &  &  &  &  &  \\
+\midrule
+\multirow[c]{8}{*}{0\%} & RMSE & 807.62 & 831.32 & 819.08 & \bfseries 794.91 & 435.12 & 438.07 & 450.56 & \bfseries 412.23 \\
+ & MAE & \bfseries 302.43 & 312.23 & 312.59 & 309.76 & 131.96 & 131.93 & 134.74 & \bfseries 131.35 \\
+ & R$^2$ & 0.72 & 0.70 & 0.71 & \bfseries 0.73 & 0.72 & 0.73 & 0.74 & \bfseries 0.75 \\
+ & EFE & 13.92 & 10.82 & 11.97 & \bfseries 6.36 & 19.98 & 14.02 & \bfseries 6.52 & 18.70 \\
+ & Pinball Q50 & \bfseries 151.22 & 156.11 & 156.29 & 154.88 & 65.98 & 65.97 & 67.37 & \bfseries 65.68 \\
+ & Coverage & 0.78 & \bfseries 0.82 & 0.81 & 0.78 & 0.63 & \bfseries 0.88 & 0.87 & 0.69 \\
+ & Sharpness & \bfseries 784.87 & 933.76 & 922.30 & 876.91 & 346.98 & 403.27 & 446.26 & \bfseries 334.93 \\
+ & Net RMSE & 775.37 & 824.82 & \bfseries 837.34 & 789.20 & --- & --- & --- & --- \\
+\midrule
+\multirow[c]{8}{*}{25\%} & RMSE & \bfseries 778.95 & 835.35 & 826.65 & 786.03 & 442.58 & 431.36 & 446.49 & \bfseries 406.80 \\
+ & MAE & \bfseries 301.79 & 320.85 & 322.47 & 317.42 & 117.22 & 116.05 & 118.88 & \bfseries 114.04 \\
+ & R$^2$ & \bfseries 0.80 & 0.78 & 0.77 & 0.80 & 0.79 & 0.80 & 0.81 & \bfseries 0.82 \\
+ & EFE & 11.75 & 7.21 & 9.16 & \bfseries 2.87 & 18.52 & 15.34 & \bfseries 7.78 & 20.29 \\
+ & Pinball Q50 & \bfseries 150.89 & 160.42 & 161.24 & 158.71 & 58.61 & 58.02 & 59.44 & \bfseries 57.02 \\
+ & Coverage & 0.77 & \bfseries 0.82 & 0.81 & 0.77 & 0.66 & 0.88 & \bfseries 0.88 & 0.73 \\
+ & Sharpness & \bfseries 824.81 & 990.73 & 980.58 & 930.49 & 335.06 & 384.24 & 423.39 & \bfseries 319.18 \\
+ & Net RMSE & 750.31 & 825.90 & \bfseries 858.71 & 782.52 & --- & --- & --- & --- \\
+\midrule
+\multirow[c]{8}{*}{50\%} & RMSE & \bfseries 760.91 & 802.89 & 794.36 & 762.03 & 448.04 & 443.87 & 447.58 & \bfseries 419.08 \\
+ & MAE & \bfseries 299.93 & 316.12 & 317.36 & 311.77 & 128.62 & 128.78 & 129.77 & \bfseries 127.59 \\
+ & R$^2$ & \bfseries 0.78 & 0.75 & 0.75 & 0.77 & 0.76 & 0.77 & 0.79 & \bfseries 0.79 \\
+ & EFE & 13.15 & 9.86 & 11.37 & \bfseries 4.99 & 21.03 & 16.45 & \bfseries 9.40 & 20.83 \\
+ & Pinball Q50 & \bfseries 149.96 & 158.06 & 158.68 & 155.89 & 64.31 & 64.39 & 64.88 & \bfseries 63.80 \\
+ & Coverage & 0.77 & \bfseries 0.81 & 0.81 & 0.77 & 0.65 & 0.87 & \bfseries 0.88 & 0.71 \\
+ & Sharpness & \bfseries 810.73 & 981.52 & 975.84 & 922.60 & 341.06 & 396.04 & 436.24 & \bfseries 331.95 \\
+ & Net RMSE & 726.06 & 782.95 & \bfseries 804.97 & 745.27 & --- & --- & --- & --- \\
+\midrule
+\multirow[c]{8}{*}{75\%} & RMSE & 764.10 & 799.60 & 797.30 & \bfseries 760.48 & 442.60 & 436.49 & 432.06 & \bfseries 420.67 \\
+ & MAE & \bfseries 302.96 & 318.08 & 320.16 & 313.61 & 129.42 & 129.33 & 129.59 & \bfseries 128.56 \\
+ & R$^2$ & \bfseries 0.78 & 0.75 & 0.75 & 0.77 & 0.78 & 0.78 & 0.80 & \bfseries 0.80 \\
+ & EFE & 13.19 & 9.74 & 11.27 & \bfseries 5.03 & 21.16 & 17.23 & \bfseries 10.65 & 22.09 \\
+ & Pinball Q50 & \bfseries 151.48 & 159.04 & 160.08 & 156.80 & 64.71 & 64.66 & 64.80 & \bfseries 64.28 \\
+ & Coverage & 0.77 & \bfseries 0.81 & 0.81 & 0.77 & 0.64 & 0.87 & \bfseries 0.88 & 0.71 \\
+ & Sharpness & \bfseries 813.03 & 984.47 & 978.09 & 927.62 & 348.20 & 402.62 & 440.57 & \bfseries 336.74 \\
+ & Net RMSE & 729.05 & 781.73 & \bfseries 805.73 & 747.05 & --- & --- & --- & --- \\
+\midrule
+\multirow[c]{8}{*}{100\%} & RMSE & \bfseries 818.95 & 851.44 & 857.79 & 820.67 & 469.63 & 475.26 & 488.50 & \bfseries 445.41 \\
+ & MAE & \bfseries 312.61 & 326.02 & 329.60 & 326.26 & 130.07 & 129.81 & 133.72 & \bfseries 127.32 \\
+ & R$^2$ & \bfseries 0.80 & 0.78 & 0.77 & 0.80 & 0.79 & 0.78 & 0.80 & \bfseries 0.81 \\
+ & EFE & 12.39 & 7.54 & 9.23 & \bfseries 3.38 & 18.71 & 14.93 & \bfseries 7.23 & 19.72 \\
+ & Pinball Q50 & \bfseries 156.30 & 163.01 & 164.80 & 163.13 & 65.04 & 64.91 & 66.86 & \bfseries 63.66 \\
+ & Coverage & 0.78 & \bfseries 0.81 & 0.81 & 0.77 & 0.64 & \bfseries 0.88 & 0.87 & 0.71 \\
+ & Sharpness & \bfseries 859.17 & 1007.91 & 1002.69 & 953.29 & 374.45 & 427.33 & 469.78 & \bfseries 354.38 \\
+ & Net RMSE & 793.94 & 854.62 & \bfseries 898.63 & 822.97 & --- & --- & --- & --- \\
+\midrule
+\multirow[c]{8}{*}{global} & RMSE & \bfseries 773.64 & 817.34 & 810.96 & 775.00 & 445.87 & 440.04 & 446.69 & \bfseries 416.95 \\
+ & MAE & \bfseries 302.15 & 318.54 & 320.20 & 314.85 & 125.37 & 125.01 & 126.71 & \bfseries 123.60 \\
+ & R$^2$ & \bfseries 0.78 & 0.76 & 0.76 & 0.78 & 0.78 & 0.78 & 0.80 & \bfseries 0.80 \\
+ & EFE & 12.68 & 8.85 & 10.51 & \bfseries 4.26 & 20.09 & 16.07 & \bfseries 8.91 & 20.78 \\
+ & Pinball Q50 & \bfseries 151.08 & 159.27 & 160.10 & 157.43 & 62.69 & 62.51 & 63.35 & \bfseries 61.80 \\
+ & Coverage & 0.77 & \bfseries 0.81 & 0.81 & 0.77 & 0.65 & 0.87 & \bfseries 0.88 & 0.72 \\
+ & Sharpness & \bfseries 817.67 & 984.55 & 977.03 & 926.06 & 343.17 & 396.08 & 435.71 & \bfseries 330.50 \\
+ & Net RMSE & 741.58 & 803.57 & \bfseries 830.66 & 765.20 & --- & --- & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}

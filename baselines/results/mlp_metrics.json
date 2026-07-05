@@ -1,0 +1,7 @@
+{
+    "model": "mlp",
+    "pinball_loss_load": 0.13156,
+    "pinball_loss_pv": 0.079,
+    "mae_load_w": 389.15,
+    "mae_pv_w": 224.731
+}

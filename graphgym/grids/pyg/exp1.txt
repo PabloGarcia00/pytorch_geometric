@@ -1,0 +1,3 @@
+# --- Experiment 1: Unified MVP Grid ---
+earne_data.weather_features w [['solar_radiation_avg','solar_radiation_max','sunshine_duration_min','air_temperature','soil_temp_5cm'],[]]
+gnn.layers_mp mp [2,0]

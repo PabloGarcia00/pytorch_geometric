@@ -1,0 +1,48 @@
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv
+dataset:
+  dir: datasets/earne
+  format: earne_loader_new
+  name: spatial_knn
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  days: 5000
+  mapping_csv: ../../exploratory-data-analysis/output/weather_hive/zip_to_station_mapping.csv
+  metadata_csv: ../../exploratory-data-analysis/output/mac_overview_updated.csv
+  n_user: 136
+  processed_root: datasets/earne
+  raw_data_path: ../../exploratory-data-analysis/output/clean_data_hive
+  weather_features: []
+  weather_hive: ../../exploratory-data-analysis/output/weather_hive
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+gnn:
+  act: relu
+  att_heads: 4
+  batchnorm: false
+  dim_inner: 64
+  dropout: 0.1
+  layer_type: gatconv
+  layers_mp: 0
+  layers_post_mp: 1
+  layers_pre_mp: 0
+  stage_type: stack
+model:
+  graph_pooling: add
+  loss_fun: earne_loss
+  type: earne_network
+num_workers: 4
+optim:
+  base_lr: 0.001
+  max_epoch: 100
+  optimizer: adam
+  scheduler: cos
+out_dir: results/earne_weather_all_15min_grid_exp1_mvp
+train:
+  batch_size: 32
+  ckpt_period: 10
+  eval_period: 1
+  mode: example
+  physics_weight: 0.0

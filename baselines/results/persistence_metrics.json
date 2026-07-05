@@ -1,0 +1,7 @@
+{
+    "model": "persistence",
+    "pinball_loss_load": 0.40069,
+    "pinball_loss_pv": 0.78685,
+    "mae_load_w": 659.953,
+    "mae_pv_w": 549.781
+}

@@ -1,0 +1,127 @@
+conv1d_kernel_size: 96
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv
+dataset:
+  dir: datasets/earne
+  format: earne_loader_new
+  name: earne_exp2
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  cadence_minutes: 15
+  days: 730
+  dual_read: false
+  energy_norm_mode: log1p
+  filter_macs:
+  - B48A0AD0B2A0
+  - 4C75252481DA
+  - 4855197D4FF6
+  - A4CF12B9532B
+  - B48A0ADD5D0F
+  - C82B962CEED1
+  - 40F5200CD4B0
+  - A4CF12B94B17
+  - 4C752524CD79
+  - 4C752525FFA0
+  - A4CF12B9532F
+  - 40F5200D9F7D
+  - 2CF4320F530C
+  - A4CF12B94B41
+  - B48A0ADD52B1
+  - 40F5200D8108
+  - 40F5200CC1B2
+  - 4C7525260B78
+  - 40F5200C9C0A
+  - 2CF4320F837A
+  - 4C75252535E9
+  - A4CF12B7BA84
+  - 40F5200C9F81
+  - 4417933DE450
+  - B48A0ADB6B24
+  - B48A0AD65C94
+  - E0980699A4CE
+  - B48A0ADC83D4
+  - 483FDA6E4464
+  - 840D8EB3879E
+  - B48A0AD663F0
+  - 4C7525254F62
+  - 4C7525245A17
+  - C82B962CF09F
+  - 4855197D52FE
+  - 4417933EB0B8
+  - 2CF4320F8402
+  - 4855197E80DF
+  - 40F5200CD549
+  - 40F5200C724F
+  - 40F5200D423A
+  - 40F5200CDBFF
+  - B48A0ADBAD35
+  - 40F5200D821A
+  - 08F9E07960A5
+  - B48A0ADD42FC
+  - 40F5200CA797
+  - 308398AD5423
+  - EC64C9C0D593
+  - B48A0ADB6BCA
+  - 4C752525532A
+  - A4CF12B94B09
+  - 308398AC7785
+  - 40F5200CF526
+  filter_zips: []
+  graph_mode: spatial_knn
+  k_neighbors: 5
+  mask_weather: true
+  processed_root: datasets/earne
+  weather_features:
+  - temperature_2m_om_mean
+  - temperature_2m_om_std
+  - shortwave_radiation_om_mean
+  - shortwave_radiation_om_std
+  - relative_humidity_2m_om_mean
+  - relative_humidity_2m_om_std
+  - cloud_cover_low_om_mean
+  - cloud_cover_low_om_std
+  weather_norm_mode: znorm
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+gnn:
+  act: relu
+  att_heads: 4
+  batchnorm: false
+  dim_inner: 64
+  dropout: 0.1
+  layer_type: gatconv
+  layers_mp: 0
+  layers_post_mp: 2
+  layers_pre_mp: 0
+  stage_type: stack
+metric_best: loss
+model:
+  dim_in: 1
+  head_name: earne_quantile
+  hidden_channels: 64
+  loss_fun: earne_loss
+  n_quantiles: 3
+  node_encoder_name: earne_temporal
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
+  seq_len: 96
+  type: earne_network
+num_workers: 4
+optim:
+  base_lr: 0.001
+  max_epoch: 100
+  optimizer: adam
+  scheduler: cos
+out_dir: results/earne_exp2_grid_exp2
+train:
+  batch_size: 32
+  ckpt_period: 10
+  eval_period: 1
+  mode: standard
+  physics_weight: 0.0
+  train_split: 0.7
+  val_split: 0.85

@@ -1,0 +1,8 @@
+# Sweep: GNN layer type (backbone ablation)
+# Axes  : 1   Runs: 3
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn.yaml --grid grids/pyg/sweep_gnn_type.txt
+#
+# alias  meaning
+# gnn    gnn.layer_type
+
+gnn.layer_type gnn ['gatconv','gcnconv','sageconv']

@@ -1,0 +1,42 @@
+out_dir: results
+num_workers: 4
+dataset:
+  format: earne_disagg
+  name: earne
+  dir: datasets/earne
+  task: graph
+  task_type: regression
+  transductive: false
+train:
+  mode: example
+  batch_size: 32
+  eval_period: 1
+  ckpt_period: 10
+  physics_weight: 0.0
+model:
+  type: earne_network
+  loss_fun: earne_loss
+  graph_pooling: add
+gnn:
+  layers_pre_mp: 0
+  layers_mp: 2
+  layers_post_mp: 1
+  dim_inner: 64
+  layer_type: gatconv
+  stage_type: stack
+  batchnorm: false
+  act: relu
+  dropout: 0.1
+  att_heads: 4
+
+optim:
+  optimizer: adam
+  base_lr: 0.001
+  max_epoch: 100
+earne_data:
+  days: 365
+  n_user: 10
+  raw_data_path: "datasets/earne/raw/"
+custom_metrics:
+  - earne_mae_load
+  - earne_mae_pv

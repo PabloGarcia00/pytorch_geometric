@@ -1,0 +1,10 @@
+# Sweep: weather mode × message-passing depth
+# Axes  : 2   Runs: 4
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn.yaml --grid grids/pyg/sweep_wx_mp.txt
+#
+# alias  meaning
+# wx     earne_data.weather_mode  (True = use features defined in base config)
+# mp     gnn.layers_mp
+
+earne_data.weather_mode wx [True,False]
+gnn.layers_mp mp [3,0]

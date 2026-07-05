@@ -1,0 +1,5 @@
+# --- Experiment 2: Extended Grid ---
+earne_data.weather_mode weather_mode [True,False]
+gnn.layers_mp mp [3,0]
+earne_data.graph_mode graph_mode ['spatial_knn','full_graph','learned_corr']
+earne_data.energy_norm_mode norm_mode [('ihs', "log1p"),('log1p', "ihs")]

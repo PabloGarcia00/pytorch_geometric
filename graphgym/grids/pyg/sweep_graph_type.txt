@@ -1,0 +1,20 @@
+# Sweep: graph topology type
+# Axes  : 1   Runs: 4
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn.yaml --grid grids/pyg/sweep_graph_type.txt
+#
+# BEFORE RUNNING: update gnn.layers_mp and gnn.dim_inner in the base config
+# (configs/pyg/earne_gat_knn.yaml) to the best values found in sweep_gnn_capacity.
+#
+# Coverage: require_full_span=True is the default — only nodes present in both
+# the first and last week of the dataset are included (optimal coverage).
+#
+# Graph modes:
+#   spatial_knn   — k-NN on geographic coordinates; static, distance-weighted edges
+#   full_graph    — fully connected; static, distance-weighted edges
+#   static_corr   — threshold on full-dataset Pearson |correlation|; learnable threshold λ
+#   learned_corr  — threshold on rolling-window correlation from each batch; learnable λ
+#
+# alias  meaning
+# graph  earne_data.graph_mode
+
+earne_data.graph_mode graph ['spatial_knn','full_graph','static_corr','learned_corr']

@@ -1,0 +1,30 @@
+[project]
+name = "graphgym"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "duckdb>=1.5.1",
+  "ipython",
+  "joblib>=1.5.3",
+  "matplotlib>=3.10.8",
+  "numpy>=1.26.4",
+  "pandas>=2.3.3",
+  "polars",
+  "pyarrow",
+  "pytorch-lightning>=2.6.1",
+  "scipy",
+  "tensorboardX",
+  "torch>=2.10.0",
+  "torch-geometric",
+  "wandb>=0.26.0",
+  "yacs>=0.1.8",
+]
+
+[tool.pyright]
+venv = ".venv"
+venvPath = "."
+
+[tool.uv.workspace]
+members = ["torch-geometric", "graphgym"]

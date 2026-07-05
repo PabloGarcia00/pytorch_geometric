@@ -1,0 +1,3 @@
+# --- Experiment 3: Unified MVP Grid ---
+earne_data.weather_mode weather_mode [True,False]
+gnn.layers_mp mp [3,0]

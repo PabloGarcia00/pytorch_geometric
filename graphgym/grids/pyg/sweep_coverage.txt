@@ -1,0 +1,16 @@
+# Sweep: node coverage strategy
+# Axes  : 1   Runs: 2
+# Usage : python configs_gen.py --config configs/pyg/earne_gat_knn.yaml --grid grids/pyg/sweep_coverage.txt
+#
+# span=True  → optimal coverage: only nodes active in the first AND last week of the
+#              dataset window are included; late-onboarded / early-offboarded nodes dropped.
+# span=False → native observation window: all nodes included; the operational mask
+#              handles missing readings at the edges for partial-span nodes.
+#
+# NOTE: this flag controls node selection at dataset load time, not at process() time,
+#       so no reprocessing (data.pt deletion) is needed when switching between values.
+#
+# alias  meaning
+# span   earne_data.require_full_span
+
+earne_data.require_full_span span [True,False]
