@@ -437,7 +437,7 @@ class EARNeGraphDataset(Dataset):
             .with_columns(pl.col("zipcode").fill_null(0).cast(pl.Int64))
         )
         coords_df = pd.read_csv(cfg.earne_data.zipcode_coords)
-        zip_to_latlon = coords_df.set_index("zipcode")[
+        zip_to_latlon = coords_df.set_index("two_number_zip")[
             ["latitude", "longitude"]
         ]
         zips = mac_zip["zipcode"].to_pandas()

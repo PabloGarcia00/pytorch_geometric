@@ -29,8 +29,13 @@ def set_cfg_earne(cfg):
     )
     eda_root = os.environ.get("EARNE_DATA_ROOT", eda_root_default)
 
-    cfg.earne_data.gold_data = (
-        f"{eda_root}/output/gold_layer/fleet_gold_layer.parquet"
+    # gold_data lives directly at the pytorch_geometric project root on this
+    # machine, not under exploratory-data-analysis/output/gold_layer.
+    project_root_default = os.path.abspath(
+        os.path.join(config_dir, "..", "..", "..")
+    )
+    cfg.earne_data.gold_data = os.path.join(
+        project_root_default, "fleet_gold_layer.parquet"
     )
     cfg.earne_data.zipcode_coords = f"{eda_root}/assets/zipcode_coordinate.csv"
 
