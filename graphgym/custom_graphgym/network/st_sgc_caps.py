@@ -21,6 +21,17 @@ class STSGCCaps(nn.Module):
         self.m = config.m
         self.m_prime = config.m_prime
 
+        # Dual read: batch.x carries [consumption, generation] instead of net
+        # demand, same convention as earne_network (cfg.model.dim_in == 2).
+        self.dual_read = cfg.model.dim_in == 2
+        self.signal_channels = 2 if self.dual_read else 1
+
+        # Weather: gates the per-timestep encoder embedding, mirroring
+        # earne_network's temporal encoder (high irradiance amplifies
+        # PV-related features in the embedding).
+        self.weather_mode = cfg.earne_data.weather_mode
+        self.n_weather = len(cfg.earne_data.weather_features) if self.weather_mode else 0
+
         self.graph_mode = cfg.earne_data.get('graph_mode', 'spatial_knn')
         if self.graph_mode == 'learned_corr':
             self.lambda_threshold = nn.Parameter(torch.tensor(config.lambda_graph))
@@ -29,7 +40,7 @@ class STSGCCaps(nn.Module):
 
         self.graph_builder = GraphBuilder(lambda_threshold=config.lambda_graph)
         self.encoder = SGCAPL(
-            input_dim=1,  # receives one scalar per node per time step, not the full sequence
+            input_dim=self.signal_channels,
             hidden_dim=config.M_prime,
             output_dim=config.M_prime,
             n_layers=config.M,
@@ -39,6 +50,7 @@ class STSGCCaps(nn.Module):
             input_dim=config.M_prime,
             edge_hidden=config.decoder_e.layers,
             node_hidden=config.decoder_s.layers,
+            output_dim=self.signal_channels,
         )
         self.sparse_coder = SparseCodingModule(
             feature_dim=config.M_prime,
@@ -59,39 +71,69 @@ class STSGCCaps(nn.Module):
             lambda_SC=config.lambda_SC,
         )
 
-    def forward(self, batch):
-        net_demand = batch.x
-        if net_demand.dim() == 3 and net_demand.shape[-1] == 1:
-            net_demand = net_demand.squeeze(-1)  # [N, T]
+        if self.weather_mode:
+            gate_hidden = config.M_prime // 2
+            self.weather_gate = nn.Sequential(
+                nn.Linear(self.n_weather, gate_hidden),
+                nn.GELU(),
+                nn.Linear(gate_hidden, config.M_prime),
+            )
 
-        batch_size = net_demand.shape[0]
-        device = net_demand.device
+    def _extract_raw_x(self, batch):
+        """Single read: batch.x [N, T, 1] -> (net_demand [N, T], None)
+        Dual read:   batch.x [N, T, 2] -> (consumption [N, T], generation [N, T])
+        """
+        if batch.x.shape[-1] == 2:
+            return batch.x[:, :, 0], batch.x[:, :, 1]
+        return batch.x[:, :, 0], None
+
+    def forward(self, batch):
+        raw_x, second_stream = self._extract_raw_x(batch)
+
+        # Graph correlation always works off a single [N, T] signal; in dual
+        # read mode use net (consumption - generation), same convention as
+        # earne_network._get_graph.
+        graph_signal = raw_x if second_stream is None else raw_x - second_stream
+
+        batch_size = raw_x.shape[0]
+        device = raw_x.device
+        weather = batch.weather if self.weather_mode else None  # [N, T, W]
 
         graphs = []
         for t in range(self.m + 1):
             if t == 0:
                 adj = torch.zeros(batch_size, batch_size, device=device)
-                nodes = net_demand[:, t]
             else:
-                adj, nodes = self.graph_builder.build_graph(
-                    net_demand[:, :t + 1],
+                adj, _ = self.graph_builder.build_graph(
+                    graph_signal[:, :t + 1],
                     lambda_threshold=self.lambda_threshold,
                 )
                 adj = adj.to(device)
-            graphs.append((adj, nodes))
+
+            if second_stream is None:
+                node_feat = raw_x[:, t].unsqueeze(-1)  # [N, 1]
+            else:
+                node_feat = torch.stack([raw_x[:, t], second_stream[:, t]], dim=-1)  # [N, 2]
+            graphs.append((adj, node_feat))
 
         latent_features = []
         h_states, c_states = None, None
-        for adj, nodes in graphs:
-            if nodes.dim() == 1:
-                nodes = nodes.unsqueeze(-1)
+        for t, (adj, nodes) in enumerate(graphs):
             z_t, h_states, c_states = self.encoder(nodes, adj, h_states, c_states)
+            if self.weather_mode:
+                gate = torch.sigmoid(self.weather_gate(weather[:, t, :]))
+                z_t = z_t * gate
             latent_features.append(z_t)
 
         Z = torch.stack(latent_features)        # [T, N, M_prime]
         edge_pred, node_pred = self.decoder(Z[-1])
         codes = self.sparse_coder(Z, update_dict=self.training)
         load_pred, pv_pred = self.capsule_regressor(codes, n_sites=batch_size)
+
+        node_true = graphs[-1][1]
+        if self.signal_channels == 1:
+            node_pred = node_pred.squeeze(-1)
+            node_true = node_true.squeeze(-1)
 
         batch.st_caps_outputs = {
             'load_pred':       load_pred,
@@ -100,8 +142,8 @@ class STSGCCaps(nn.Module):
             'pv_true':         batch.y_pv,
             'edge_pred':       edge_pred,
             'edge_true':       graphs[-1][0],
-            'node_pred':       node_pred.squeeze(-1),
-            'node_true':       graphs[-1][1],
+            'node_pred':       node_pred,
+            'node_true':       node_true,
             'features':        Z[-1],
             'codes':           codes[-1],
             'latent_features': Z,

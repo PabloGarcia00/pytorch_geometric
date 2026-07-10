@@ -46,10 +46,11 @@ class GenerativeDecoder(nn.Module):
         input_dim: int,
         edge_hidden: List[int] = (128, 256, 1024, 512),
         node_hidden: List[int] = (512, 256, 1024, 512, 256),
+        output_dim: int = 1,
     ):
         super().__init__()
         self.edge_decoder = EdgeDecoder(input_dim * 2, edge_hidden)
-        self.node_decoder = NodeDecoder(input_dim, 1, node_hidden)
+        self.node_decoder = NodeDecoder(input_dim, output_dim, node_hidden)
 
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.edge_decoder(z), self.node_decoder(z)
