@@ -22,8 +22,15 @@ class GraphBuilder:
         mean = recent_data.mean(dim=1, keepdim=True)
         centered = recent_data - mean
         std = centered.std(dim=1, unbiased=True)
-        std[std == 0] = 1e-9
-        norm_centered = centered / std.unsqueeze(1)
+        # Constant/inactive (zero-filled) nodes have std ~0. Dividing their
+        # near-zero floating-point residual by a tiny epsilon amplifies noise
+        # into spurious, unbounded "self-correlation" that overflows exp()
+        # below — zero those rows outright instead of dividing into them.
+        degenerate = std < 1e-6
+        std_safe = std.clone()
+        std_safe[degenerate] = 1.0
+        norm_centered = centered / std_safe.unsqueeze(1)
+        norm_centered[degenerate] = 0.0
         eff_T = recent_data.shape[1]
         corr = torch.matmul(norm_centered, norm_centered.T) / (eff_T - 1)
         abs_corr = torch.abs(corr)
