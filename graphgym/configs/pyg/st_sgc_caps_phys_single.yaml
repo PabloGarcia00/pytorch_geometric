@@ -1,0 +1,101 @@
+custom_metrics:
+- st_caps_rmse
+- st_caps_mae
+
+dataset:
+  dir: datasets/earne_physmask
+  format: earne_loader_new
+  name: earne_exp2
+  shuffle_split: false
+  task: graph
+  task_type: regression
+  transductive: false
+
+earne_data:
+  dual_read: false
+  graph_mode: learned_corr
+  lambda_graph: 0.25
+  k_neighbors: 10
+  max_nodes: 0
+  # Fixed to optimal coverage for the physics experiment.
+  require_full_span: true
+  # Mask timesteps where generation_w > inverter_w (physically impossible).
+  # NOTE: changing this flag requires deleting the processed_root's processed/data.pt
+  # so the dataset is reprocessed with the updated physics mask.
+  mask_physics_impossible: true
+  filter_ids: []
+  filter_zips: []
+  energy_norm_mode:
+    load: log1p
+    pv: ihs
+    net_demand: ihs
+  weather_norm_mode:
+    all_features: znorm
+  weather_features:
+    - temperature_2m_om_mean
+    - shortwave_radiation_om_mean
+    - cloud_cover_low_om_mean
+  weather_mode: false
+  processed_root: datasets/earne_physmask
+
+# n_user = 62: verified active-node count under require_full_span=true (optimal coverage)
+# for the datasets/earne_physmask processed cache (single-read, physics mask on).
+st_caps:
+  n_user: 62
+  m: 10  # capped from documented default (35) - avoids OOM: capsule W scales as O(n_sites^2 * q * m_prime * m)
+  m_prime: 12  # capped from documented default (45), same OOM reason as m
+  M_prime: 128
+  M: 8
+  R: 3
+  q: 85
+  routing_iterations: 2
+  lambda_SC: 0.1
+  lambda_S: 1.0
+  lambda_L: 1.0
+  lambda_PV: 1.0
+  lambda_graph: 0.25
+  decoder_e:
+    layers: [32, 64]
+  decoder_s:
+    layers: [64, 32]
+
+model:
+  dim_in: 1
+  loss_fun: st_caps_loss
+  seq_len: 96
+  type: st_sgc_caps
+
+gnn:
+  layers_mp: 0
+
+optim:
+  base_lr: 0.001
+  max_epoch: 200
+  optimizer: adam
+  scheduler: warmup_cos
+
+out_dir: results
+
+train:
+  batch_size: 1
+  limit_batches: 2300  # caps iterations/epoch (model is architecturally pinned to batch_size=1, giving 32x more iters/epoch than EARNE on the same data; train coverage is randomized each epoch via DataLoader shuffle, val/test use a fixed first-N slice)
+  ckpt_period: 10
+  eval_period: 1
+  mode: earne_train
+  train_split: 0.7
+  val_split: 0.85
+  # Physics-informed constraint: load - pv = net_demand (median quantile)
+  physics_weight: 1.0
+  # Quantile-crossing penalty
+  crossing_weight: 0.05
+  early_stopping:
+    enable: true
+    monitor: val_loss
+    patience: 10
+    mode: min
+  warmup:
+    enable: true
+    epochs: 10
+
+metric_best: loss
+num_workers: 4

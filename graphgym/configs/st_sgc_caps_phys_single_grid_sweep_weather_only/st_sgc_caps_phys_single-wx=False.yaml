@@ -1,0 +1,88 @@
+custom_metrics:
+- st_caps_rmse
+- st_caps_mae
+dataset:
+  dir: datasets/earne_physmask
+  format: earne_loader_new
+  name: earne_exp2
+  shuffle_split: false
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  dual_read: false
+  energy_norm_mode:
+    load: log1p
+    net_demand: ihs
+    pv: ihs
+  filter_ids: []
+  filter_zips: []
+  graph_mode: learned_corr
+  k_neighbors: 10
+  lambda_graph: 0.25
+  mask_physics_impossible: true
+  max_nodes: 0
+  processed_root: datasets/earne_physmask
+  require_full_span: true
+  weather_features:
+  - temperature_2m_om_mean
+  - shortwave_radiation_om_mean
+  - cloud_cover_low_om_mean
+  weather_mode: false
+  weather_norm_mode:
+    all_features: znorm
+gnn:
+  layers_mp: 0
+metric_best: loss
+model:
+  dim_in: 1
+  loss_fun: st_caps_loss
+  seq_len: 96
+  type: st_sgc_caps
+num_workers: 4
+optim:
+  base_lr: 0.001
+  max_epoch: 200
+  optimizer: adam
+  scheduler: warmup_cos
+out_dir: results/st_sgc_caps_phys_single_grid_sweep_weather_only
+st_caps:
+  M: 8
+  M_prime: 128
+  R: 3
+  decoder_e:
+    layers:
+    - 32
+    - 64
+  decoder_s:
+    layers:
+    - 64
+    - 32
+  lambda_L: 1.0
+  lambda_PV: 1.0
+  lambda_S: 1.0
+  lambda_SC: 0.1
+  lambda_graph: 0.25
+  m: 10
+  m_prime: 12
+  n_user: 62
+  q: 85
+  routing_iterations: 2
+train:
+  batch_size: 1
+  ckpt_period: 10
+  crossing_weight: 0.05
+  early_stopping:
+    enable: true
+    mode: min
+    monitor: val_loss
+    patience: 10
+  eval_period: 1
+  limit_batches: 2300
+  mode: earne_train
+  physics_weight: 1.0
+  train_split: 0.7
+  val_split: 0.85
+  warmup:
+    enable: true
+    epochs: 10

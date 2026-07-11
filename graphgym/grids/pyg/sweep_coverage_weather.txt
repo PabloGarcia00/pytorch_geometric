@@ -1,0 +1,20 @@
+# Sweep: node coverage strategy x weather mode
+# Axes  : 2   Runs: 4
+# Usage : python configs_gen.py --config configs/pyg/earne_learned_corr_single.yaml --grid grids/pyg/sweep_coverage_weather.txt
+#
+# span=True  -> optimal coverage: only nodes active in the first AND last week of the
+#               dataset window are included; late-onboarded / early-offboarded nodes dropped.
+# span=False -> native observation window: all nodes included.
+#
+# NOTE: this flag controls node selection at dataset load time, not at process() time,
+#       so no reprocessing (data.pt deletion) is needed when switching between values.
+# NOTE: only used for networks with no fixed node-count constraint (EARNE). ST-SGCCaps
+#       needs a separate base config per coverage value (st_caps.n_user must match the
+#       real active-node count for that coverage setting) - see sweep_weather_only.txt.
+#
+# alias  meaning
+# span   earne_data.require_full_span
+# wx     earne_data.weather_mode
+
+earne_data.require_full_span span [True,False]
+earne_data.weather_mode wx [True,False]

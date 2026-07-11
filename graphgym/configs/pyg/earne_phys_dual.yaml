@@ -1,0 +1,101 @@
+out_dir: results
+num_workers: 0
+
+dataset:
+  format: earne_loader_new
+  name: earne_exp2
+  dir: datasets/earne_dual_physmask
+  task: graph
+  task_type: regression
+  transductive: false
+  shuffle_split: false
+
+train:
+  mode: earne_train
+  batch_size: 32
+  eval_period: 1
+  ckpt_period: 10
+  train_split: 0.7
+  val_split: 0.85
+  # Physics-informed constraint: load - pv = net_demand (median quantile)
+  physics_weight: 1.0
+  # Quantile-crossing penalty
+  crossing_weight: 0.05
+  early_stopping:
+    enable: true
+    monitor: val_loss
+    patience: 10
+    mode: min
+  warmup:
+    enable: true
+    epochs: 10
+
+model:
+  type: earne_network
+  node_encoder_name: earne_temporal
+  head_name: earne_quantile
+  loss_fun: earne_loss
+  seq_len: 96
+  dim_in: 2
+  hidden_channels: 64
+  n_quantiles: 3
+  quantiles:
+    - 0.1
+    - 0.5
+    - 0.9
+
+gnn:
+  layers_pre_mp: 0
+  layers_mp: 3
+  layers_post_mp: 3
+  dim_inner: 64
+  layer_type: gatconv
+  stage_type: stack
+  batchnorm: false
+  act: relu
+  dropout: 0.1
+  att_heads: 4
+  clear_feature: false
+  keep_edge: 1.0
+  l2norm: false
+
+optim:
+  optimizer: adam
+  base_lr: 0.001
+  max_epoch: 200
+  scheduler: warmup_cos
+
+metric_best: loss
+
+earne_data:
+  graph_mode: learned_corr
+  lambda_graph: 0.25
+  k_neighbors: 10
+  dual_read: true
+  weather_mode: false
+  # Fixed to optimal coverage for the physics experiment.
+  require_full_span: true
+  # Mask timesteps where generation_w > inverter_w (physically impossible).
+  # NOTE: changing this flag requires deleting the processed_root's processed/data.pt
+  # so the dataset is reprocessed with the updated physics mask.
+  mask_physics_impossible: true
+  energy_norm_mode:
+    load: log1p
+    pv: ihs
+    net_demand: ihs
+    consumption: log1p
+    generation: ihs
+  weather_norm_mode:
+    all_features: znorm
+  weather_features:
+    - temperature_2m_om_mean
+    - shortwave_radiation_om_mean
+    - cloud_cover_low_om_mean
+  processed_root: datasets/earne_dual_physmask
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+  filter_zips: []
+  filter_ids: []
+
+custom_metrics:
+  - earne_mae_load
+  - earne_mae_pv

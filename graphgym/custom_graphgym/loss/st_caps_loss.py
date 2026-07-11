@@ -22,8 +22,11 @@ def st_caps_loss_complex(pred, true):
         lambda_L=cfg.st_caps.lambda_L,
         lambda_PV=cfg.st_caps.lambda_PV,
         lambda_SC=cfg.st_caps.lambda_SC,
+        physics_weight=cfg.train.physics_weight,
     )
-    total_loss, _ = loss_module(batch.st_caps_outputs)
+    total_loss, _ = loss_module(
+        batch.st_caps_outputs, mask=true[:, 2], net_demand_true=true[:, 3],
+    )
     return total_loss, pred
 
 
@@ -81,15 +84,39 @@ class DisaggregationLoss(nn.Module):
         return total, {'load_loss': j_L.item(), 'pv_loss': j_PV.item(), 'est_loss': total.item()}
 
 
+class PhysicsLoss(nn.Module):
+    """Physics-informed constraint: load - pv = net_demand (mirrors earne_loss.py)."""
+
+    def forward(
+        self,
+        load_pred: torch.Tensor,
+        pv_pred: torch.Tensor,
+        net_demand_true: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict]:
+        pred_net_demand = load_pred - pv_pred
+        diff_sq = (pred_net_demand - net_demand_true) ** 2
+        loss = (diff_sq * mask).sum() / (mask.sum() + 1e-9)
+        return loss, {'physics_loss': loss.item()}
+
+
 class STSGCCapsLoss(nn.Module):
     def __init__(self, lambda_S: float = 1.0, lambda_L: float = 1.0,
-                 lambda_PV: float = 1.0, lambda_SC: float = 0.1):
+                 lambda_PV: float = 1.0, lambda_SC: float = 0.1,
+                 physics_weight: float = 0.0):
         super().__init__()
         self.recon_loss = ReconstructionLoss(lambda_S)
         self.sc_loss = SparseCodingLoss(lambda_SC)
         self.disagg_loss = DisaggregationLoss(lambda_L, lambda_PV)
+        self.physics_loss = PhysicsLoss()
+        self.physics_weight = physics_weight
 
-    def forward(self, outputs: Dict) -> Tuple[torch.Tensor, Dict]:
+    def forward(
+        self,
+        outputs: Dict,
+        mask: torch.Tensor = None,
+        net_demand_true: torch.Tensor = None,
+    ) -> Tuple[torch.Tensor, Dict]:
         metrics = {}
         total_loss = torch.tensor(0.0, device=outputs['load_pred'].device)
 
@@ -114,5 +141,13 @@ class STSGCCapsLoss(nn.Module):
         )
         total_loss = total_loss + disagg_loss
         metrics.update(disagg_metrics)
+
+        if self.physics_weight > 0.0 and mask is not None and net_demand_true is not None:
+            physics_loss, physics_metrics = self.physics_loss(
+                outputs['load_pred'], outputs['pv_pred'], net_demand_true, mask,
+            )
+            total_loss = total_loss + self.physics_weight * physics_loss
+            metrics.update(physics_metrics)
+
         metrics['total_loss'] = total_loss.item()
         return total_loss, metrics
