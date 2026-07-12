@@ -369,7 +369,16 @@ class EARNeGraphDataset(Dataset):
 
     def _process_shared(self):
         # ── Load & filter ─────────────────────────────────────────────────
-        lf = pl.scan_parquet(cfg.earne_data.gold_data).with_columns(
+        gold_data = cfg.earne_data.gold_data
+        if not Path(gold_data).exists():
+            # Saved configs often bake in the gold_data path of the machine
+            # that produced them (e.g. a sagemaker path). Fall back to this
+            # machine's copy, which lives at the pytorch_geometric project root.
+            local_gold_data = Path(__file__).resolve().parents[3] / "fleet_gold_layer.parquet"
+            if local_gold_data.exists():
+                gold_data = str(local_gold_data)
+
+        lf = pl.scan_parquet(gold_data).with_columns(
             pl.col("user_id").cast(pl.Utf8)
         )
         start_date = datetime.fromisoformat(cfg.earne_data.start_date).replace(

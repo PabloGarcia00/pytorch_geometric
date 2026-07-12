@@ -1,7 +1,0 @@
-{
-    "model": "cvae",
-    "pinball_loss_load": 0.10458,
-    "pinball_loss_pv": 0.30371,
-    "mae_load_w": 288.571,
-    "mae_pv_w": 128.679
-}

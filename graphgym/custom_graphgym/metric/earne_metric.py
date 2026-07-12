@@ -12,7 +12,9 @@ _TRANSFORM_CACHE = {}
 
 def _get_transform() -> Transform:
     mode = "dual" if cfg.model.dim_in == 2 else "single"
-    dataset_dir = cfg.dataset.dir
+    # earne_loader_new reads/writes under earne_data.processed_root, not
+    # dataset.dir (which goes unused and can point somewhere else entirely).
+    dataset_dir = cfg.earne_data.processed_root
     cache_key = f"{dataset_dir}_{mode}"
 
     if cache_key in _TRANSFORM_CACHE:

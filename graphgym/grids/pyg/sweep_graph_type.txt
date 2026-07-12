@@ -17,4 +17,4 @@
 # alias  meaning
 # graph  earne_data.graph_mode
 
-earne_data.graph_mode graph ['spatial_knn','full_graph','static_corr','learned_corr']
+earne_data.graph_mode graph ['spatial_knn, 'static_corr','learned_corr']

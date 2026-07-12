@@ -1,140 +1,207 @@
+import argparse
+import json
 import sys
-sys.path.insert(0, "/home/llan/projects/messm/pytorch_geometric-single-read/graphgym")
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import custom_graphgym  # noqa — registers loaders/losses/metrics
 import pandas as pd
 import torch
-from custom_graphgym.loader.graph_dataset import EARNeGraphDataset
-from custom_graphgym.transform.normalization import denorm_ihs, denorm_log1p
+import tqdm
+import yaml
 from custom_graphgym.metric.regression import DisaggregationMetrics
 
+from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
+from torch_geometric.data.storage import GlobalStorage
+from torch_geometric.graphgym.config import cfg, load_cfg
+from torch_geometric.graphgym.model_builder import create_model
+from torch_geometric.graphgym.train import GraphGymDataModule
 
+torch.serialization.add_safe_globals([DataEdgeAttr, DataTensorAttr, GlobalStorage])
 
 # ── config ────────────────────────────────────────────────────────────────────
-OUTPUT_DATA = Path(
-    "/home/llan/projects/messm/pytorch_geometric-single-read/graphgym/output/earne_exp3"
-)
-raw_params = torch.load("datasets/earne/transform_single.pt")
-DENORM_PARAMS = {
-    "load_scaled": (raw_params["load"]["param1"], raw_params["load"]["param2"]),
-    "pv_scaled": (raw_params["pv"]["param1"], raw_params["pv"]["param2"]),
-    "net_scaled": (raw_params["net_demand"]["param1"], raw_params["net_demand"]["param2"]),
-}
+RESULTS_ROOT = Path("results")
 
 
-EXP_LABELS = {
-    "earne_exp3-weather_mode=False-mp=0": r"W- MP0",
-    "earne_exp3-weather_mode=False-mp=3": r"W- MP3",
-    "earne_exp3-weather_mode=True-mp=0": r"W+ MP0",
-    "earne_exp3-weather_mode=True-mp=3": r"W+ MP3",
-}
-
-BIN_EDGES = torch.tensor([0.0, 0.25, 0.50, 0.75, 1.0, float("inf")])
-BIN_LABELS = {
-    0: "No PV",
-    1: "0%",
-    2: "25%",
-    3: "50%",
-    4: "75%",
-    5: "100%",
-}
-BIN_ORDER = list(BIN_LABELS.values()) + ["global"]
+# ── discovery ─────────────────────────────────────────────────────────────────
+def _load_last_stats(path: Path) -> dict:
+    """stats.json files are JSON-lines (one record per epoch); return the last one."""
+    if not path.exists():
+        return {}
+    lines = [line for line in path.read_text().splitlines() if line.strip()]
+    return json.loads(lines[-1]) if lines else {}
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-def denorm_pred(pred, params):
-    load_denorm = denorm_log1p(pred[..., :3, :], *params["load_scaled"])
-    pv_denorm = denorm_ihs(pred[..., 3:, :], *params["pv_scaled"])
-    return torch.cat([load_denorm, pv_denorm], dim=1)
+def _parse_run_tag(run_name: str) -> dict:
+    """'earne_learned_corr_dual-span=False-wx=True' -> {'model_name': 'earne_learned_corr_dual', 'span': False, 'wx': True}"""
+    base, *params = run_name.split("-")
+    tag: dict[str, bool | str] = {"model_name": base}
+    for param in params:
+        if "=" not in param:
+            continue
+        key, value = param.split("=", 1)
+        tag[key] = value if value not in ("True", "False") else value == "True"
+    return tag
 
 
-def denorm_true(true, params):
-    load_denorm = denorm_log1p(true[..., [0], :], *params["load_scaled"])
-    pv_denorm = denorm_ihs(true[..., [1], :], *params["pv_scaled"])
-    net_denorm = denorm_ihs(true[..., [3], :], *params["net_scaled"])
-    mask = true[..., [2], :]
-    return torch.cat([load_denorm, pv_denorm, mask, net_denorm], dim=1)
+def discover_manifest(results_root: Path | str = RESULTS_ROOT) -> pd.DataFrame:
+    """
+    Walk `results_root/<sweep>/<run>/<seed>/` and return one row per (sweep, run, seed)
+    pointing at that replicate's config, checkpoint, and stats — the starting point for
+    running/aggregating metrics generically across every disaggregation model in `results/`.
+    """
+    results_root = Path(results_root)
+    records = []
+
+    for config_path in sorted(results_root.glob("*/*/config.yaml")):
+        run_dir = config_path.parent
+        cfg_yaml = yaml.safe_load(config_path.read_text())
+        dataset_cfg = cfg_yaml.get("dataset", {})
+        earne_cfg = cfg_yaml.get("earne_data", {})
+        model_cfg = cfg_yaml.get("model", {})
+
+        seed_dirs = sorted(
+            (p for p in run_dir.iterdir() if p.is_dir() and p.name.isdigit()),
+            key=lambda p: int(p.name),
+        )
+
+        for seed_dir in seed_dirs:
+            ckpts = sorted(seed_dir.glob("ckpt/*.ckpt"))
+            test_stats = _load_last_stats(seed_dir / "test" / "stats.json")
+            val_stats = _load_last_stats(seed_dir / "val" / "stats.json")
+
+            records.append(
+                {
+                    "sweep": run_dir.parent.name,
+                    "run_name": run_dir.name,
+                    **_parse_run_tag(run_dir.name),
+                    "seed": int(seed_dir.name),
+                    "run_dir": run_dir,
+                    "seed_dir": seed_dir,
+                    "config_path": config_path,
+                    "ckpt_path": ckpts[-1] if ckpts else None,
+                    "n_ckpts": len(ckpts),
+                    "dataset_dir": dataset_cfg.get("dir"),
+                    "processed_root": earne_cfg.get("processed_root"),
+                    # the loader reads/writes datasets under earne_data.processed_root,
+                    # not dataset.dir (which is unused by earne_loader_new) — check that
+                    "dataset_exists": (
+                        Path(earne_cfg.get("processed_root", "")) / "processed" / "data.pt"
+                    ).exists(),
+                    "dataset_format": dataset_cfg.get("format"),
+                    "graph_mode": earne_cfg.get("graph_mode"),
+                    "dual_read": earne_cfg.get("dual_read"),
+                    "weather_mode": earne_cfg.get("weather_mode"),
+                    "mask_physics_impossible": earne_cfg.get("mask_physics_impossible"),
+                    "require_full_span": earne_cfg.get("require_full_span"),
+                    "model_type": model_cfg.get("type"),
+                    "dim_in": model_cfg.get("dim_in"),
+                    "n_quantiles": model_cfg.get("n_quantiles"),
+                    "test_loss": test_stats.get("loss"),
+                    "test_mae_load": test_stats.get("earne_mae_load"),
+                    "test_mae_pv": test_stats.get("earne_mae_pv"),
+                    "val_loss": val_stats.get("loss"),
+                }
+            )
+
+    return pd.DataFrame(records)
 
 
-def flatten_metrics(metrics: dict) -> dict:
-    """{'load': {'rmse': 1.0, ...}, 'pv': {...}} → {'load_rmse': 1.0, ...}"""
-    return {
-        f"{target}_{metric}": value
-        for target, m in metrics.items()
-        for metric, value in m.items()
-    }
+# ── disaggregation (inference on the test split) ───────────────────────────────
+def _load_state_dict(ckpt_path: Path, model: torch.nn.Module) -> None:
+    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("state_dict", checkpoint.get("model_state_dict", checkpoint))
+
+    model_keys = list(model.state_dict().keys())
+    ckpt_keys = list(state_dict.keys())
+    if model_keys[0].startswith("model.") and not ckpt_keys[0].startswith("model."):
+        state_dict = {f"model.{k}": v for k, v in state_dict.items()}
+    elif ckpt_keys[0].startswith("model.") and not model_keys[0].startswith("model."):
+        state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict)
 
 
-def compute_bin_indices(denorm_params):
-    input_data = EARNeGraphDataset("./datasets/earne")
-    node_pv_max = (
-        denorm_ihs(input_data.pv_scaled, *denorm_params["pv_scaled"])
-        * input_data.mask_data
-    ).max(dim=0)[0]
-    node_load_max = (
-        denorm_log1p(input_data.load_scaled, *denorm_params["load_scaled"])
-        * input_data.mask_data
-    ).max(dim=0)[0]
-    node_solar_penetration = node_pv_max / node_load_max
-    return torch.bucketize(node_solar_penetration, BIN_EDGES)
+def disaggregate_test_set(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """
+    Load `row`'s config + checkpoint, run inference over its test split, and
+    denormalize predictions/labels back into physical units (W).
+
+    Returns (true, pred) as [num_nodes, channels, timesteps]:
+        true: [N, 4, T]  — y_load, y_pv, mask, y_net_demand
+        pred: [N, 6, T]  — load_q10, load_q50, load_q90, pv_q10, pv_q50, pv_q90
+    or None if the dataset/checkpoint for this run isn't available on this machine.
+    """
+    if row["ckpt_path"] is None:
+        return None
+
+    cfg.set_new_allowed(True)
+    load_cfg(cfg, argparse.Namespace(cfg_file=str(row["config_path"]), opts=[]))
+    cfg.accelerator = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(cfg.accelerator)
+
+    datamodule = GraphGymDataModule()
+    test_loader = datamodule.test_dataloader()
+    dataset = test_loader.dataset
+
+    model = create_model()
+    _load_state_dict(row["ckpt_path"], model)
+    model = model.to(device).eval()
+
+    true_chunks, pred_chunks = [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = batch.to(device)
+            pred, true = model(batch)  # (pred, true) per GraphGymModule.forward()
+            # pred: [N, n_quantiles * 2]  (load + PV quantiles)
+            # true: [N, 4]                (y_load, y_pv, mask, y_net_demand)
+
+            t_per_batch = pred.shape[0] // dataset.num_nodes
+            pred_chunks.append(
+                pred.reshape(dataset.num_nodes, t_per_batch, cfg.model.n_quantiles * 2)
+                .permute(0, 2, 1)  # → [num_nodes, 6, t_per_batch]
+                .cpu()
+            )
+            true_chunks.append(
+                true.reshape(dataset.num_nodes, t_per_batch, 4)
+                .permute(0, 2, 1)  # → [num_nodes, 4, t_per_batch]
+                .cpu()
+            )
+
+    pred = torch.cat(pred_chunks, dim=2)
+    true = torch.cat(true_chunks, dim=2)
+
+    t = dataset.transform_obj
+    pred_denorm = torch.cat(
+        [
+            t.inverse_transform("load", pred[:, :3]),
+            t.inverse_transform("pv", pred[:, 3:]),
+        ],
+        dim=1,
+    )
+    true_denorm = torch.cat(
+        [
+            t.inverse_transform("load", true[:, [0]]),
+            t.inverse_transform("pv", true[:, [1]]),
+            true[:, [2]],  # mask — not a normalized stream
+            t.inverse_transform("net_demand", true[:, [3]]),
+        ],
+        dim=1,
+    )
+    return true_denorm, pred_denorm
 
 
-# ── bin indices (shared across all experiments) ───────────────────────────────
-bin_indices = compute_bin_indices(DENORM_PARAMS)
+def compute_metrics(row: pd.Series) -> dict | None:
+    """Disaggregate `row`'s test set and score it with DisaggregationMetrics."""
+    result = disaggregate_test_set(row)
+    if result is None:
+        return None
+    true, pred = result
+    return DisaggregationMetrics.all(true.numpy(), pred.numpy())
 
-# ── pair pred/true files by experiment name ───────────────────────────────────
-pred_files = {
-    p.name.replace("_pred.pt", ""): p for p in OUTPUT_DATA.glob("*pred.pt")
-}
-true_files = {
-    p.name.replace("_true.pt", ""): p for p in OUTPUT_DATA.glob("*true.pt")
-}
-experiments = sorted(pred_files.keys() & true_files.keys())
-print(f"Found {len(experiments)} experiments: {experiments}")
 
-# ── main loop ─────────────────────────────────────────────────────────────────
-
-records = []
-
-for exp_name in experiments:
-    pred = denorm_pred(torch.load(pred_files[exp_name]), DENORM_PARAMS)
-    true = denorm_true(torch.load(true_files[exp_name]), DENORM_PARAMS)
-
-    bins_to_run = [("global", None)] + [
-        (label, bin_id) for bin_id, label in BIN_LABELS.items()
-    ]
-
-    for label, bin_id in bins_to_run:
-        if bin_id is None:
-            metrics = DisaggregationMetrics.all(true, pred)
-        else:
-            mask = bin_indices == bin_id
-            if mask.sum() == 0:
-                continue
-            metrics = DisaggregationMetrics.all(true[mask], pred[mask])
-
-        for target, target_metrics in metrics.items():
-            for metric, value in target_metrics.items():
-                records.append(
-                    {
-                        "bin": label,
-                        "metric": metric,
-                        "target": target,
-                        "experiment": EXP_LABELS.get(exp_name),
-                        "value": value,
-                    }
-                )
-
-# ── pivot into the right shape ────────────────────────────────────────────────
-df_long = pd.DataFrame(records)
-
-df = df_long.pivot_table(
-    index=["bin", "metric"],
-    columns=["target", "experiment"],
-    values="value",
-)
-
-# enforce row order
+# ── metric selection ─────────────────────────────────────────────────────────
 METRIC_ORDER = [
     "rmse",
     "nrmse",
@@ -164,144 +231,68 @@ METRIC_LABELS = {
     "sharpness": "Sharpness",
     "net_rmse": "Net RMSE",
 }
-
-
-df = df.reindex(BIN_ORDER, level="bin").reindex(METRIC_ORDER, level="metric")
-df.columns.names = ["target", "experiment"]
-df.index.names = ["bin", "metric"]
-
-
 LOWER_IS_BETTER = {
-    "rmse",
-    "nrmse",
-    "mae",
-    "mape",
-    "mbe",
-    "efe",
-    "net rmse",
-    "pinball_q10",
-    "pinball_q50",
-    "pinball_q90",
-    "sharpness",
+    "rmse", "nrmse", "mae", "mape", "mbe", "efe",
+    "net_rmse", "pinball_q10", "pinball_q50", "pinball_q90", "sharpness",
 }
 HIGHER_IS_BETTER = {"r2", "coverage"}
 
-
-def prune_metrics(df: pd.DataFrame, drop: list[str]) -> pd.DataFrame:
-    """
-    Remove specific metrics from the row index.
-
-    Usage:
-        df = prune_metrics(df, drop=["mape", "nrmse"])
-    """
-    keep = [m for m in METRIC_ORDER if m not in drop]
-    available = df.index.get_level_values("metric").unique()
-    keep = [m for m in keep if m in available]
-    return df.loc[pd.IndexSlice[:, keep], :]
+# metrics to hide from the final table — still computed, just noisy/redundant to show
+DROP_METRICS = ["nrmse", "mbe", "pinball_q10", "pinball_q90"]
 
 
-drop_metrics = [
-    "nrmse",
-    "mbe",
-    "pinball_q10",
-    "pinball_q90",
-    "pinball_q50" "net_rmse",
-]
-
-df = prune_metrics(df, drop_metrics)
-
-df = df.rename(index=METRIC_LABELS, level="metric")
-print(df)
+def prune_metrics(df: pd.DataFrame, drop: list[str] = DROP_METRICS) -> pd.DataFrame:
+    """Keep only METRIC_ORDER minus `drop`, in canonical order."""
+    keep = [m for m in METRIC_ORDER if m not in drop and m in df.index]
+    return df.loc[keep]
 
 
-def prepare_df(
-    df: pd.DataFrame, drop_metrics: list[str] | None = None
-) -> pd.DataFrame:
-    """Rename experiments + metrics, prune, reindex, round."""
-    df = df.rename(columns=EXP_LABELS, level="experiment")
-    df = df.rename(index=METRIC_LABELS, level="metric")
+# ── main ──────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    manifest = discover_manifest()
+    print(f"Discovered {len(manifest)} runs across {manifest['sweep'].nunique()} sweeps")
 
-    if drop_metrics:
-        # translate to labels if raw names passed
-        drop_labels = [METRIC_LABELS.get(m, m) for m in drop_metrics]
-        available = df.index.get_level_values("metric").unique()
-        df = df.drop(
-            index=[m for m in drop_labels if m in available], level="metric"
+    records = []
+    runnable = manifest[manifest["ckpt_path"].notna()]
+    skipped = len(manifest) - len(runnable)
+    if skipped:
+        print(f"Skipping {skipped} runs — no checkpoint")
+
+    for _, row in tqdm.tqdm(runnable.iterrows(), total=len(runnable), desc="disaggregating test sets"):
+        try:
+            metrics = compute_metrics(row)
+        except Exception as e:
+            print(f"FAILED  {row['sweep']}/{row['run_name']}/seed={row['seed']}: {e}")
+            continue
+        if metrics is None:
+            continue
+        for target, target_metrics in metrics.items():
+            for metric, value in target_metrics.items():
+                records.append(
+                    {
+                        "sweep": row["sweep"],
+                        "run_name": row["run_name"],
+                        "seed": row["seed"],
+                        "target": target,
+                        "metric": metric,
+                        "value": value,
+                    }
+                )
+
+    df_long = pd.DataFrame(records)
+    if df_long.empty:
+        print("No runs were disaggregated — nothing to report.")
+    else:
+        df_long.to_csv("notebooks/metrics_long.csv", index=False)
+
+        df = df_long.pivot_table(
+            index="metric",
+            columns=["target", "sweep", "run_name", "seed"],
+            values="value",
         )
-
-    # enforce metric row order
-    ordered_labels = [
-        METRIC_LABELS[m]
-        for m in METRIC_ORDER
-        if METRIC_LABELS.get(m, m) in df.index.get_level_values("metric")
-    ]
-    df = df.reindex(ordered_labels, level="metric")
-
-    return df.round(2)
-
-
-def highlight_best(df: pd.DataFrame):
-    def bold_best(series: pd.Series, lower_is_better: bool) -> list[str]:
-        if series.isna().all():
-            return [""] * len(series)
-        best = series.min() if lower_is_better else series.max()
-        return ["font-weight: bold" if v == best else "" for v in series]
-
-    styler = df.style
-
-    for target in df.columns.get_level_values("target").unique():
-        target_cols = df.columns[
-            df.columns.get_level_values("target") == target
-        ]
-
-        for bin_label in df.index.get_level_values("bin").unique():
-            for metric in df.index.get_level_values("metric").unique():
-                if (bin_label, metric) not in df.index:
-                    continue
-                if df.loc[(bin_label, metric), target_cols].isna().all():
-                    continue
-
-                # map display label back to raw metric key for direction lookup
-                raw_metric = next(
-                    (k for k, v in METRIC_LABELS.items() if v == metric), None
-                )
-                lower = raw_metric in LOWER_IS_BETTER if raw_metric else True
-
-                styler = styler.apply(
-                    bold_best,
-                    lower_is_better=lower,
-                    subset=pd.IndexSlice[(bin_label, metric), target_cols],
-                    axis=1,
-                )
-
-    return styler
-
-
-def export_latex(df, path):
-    df = df.rename(index=lambda x: x.replace("%", r"\%"), level="bin")
-
-    highlight_best(df).format("{:.2f}", na_rep="---").to_latex(
-        buf=path,
-        hrules=True,
-        convert_css=True,
-        caption="Disaggregation metrics by solar penetration bin",
-        label="tab:disagg_metrics",
-        position="htbp",
-    )
-
-    # add \midrule between bins
-    with open(path, "r") as f:
-        latex = f.read()
-
-    latex = latex.replace(r"\multirow", r"\midrule" + "\n" + r"\multirow")
-
-    # remove the first \midrule we just added (it's right after \midrule from hrules)
-    latex = latex.replace(r"\midrule" + "\n" + r"\midrule", r"\midrule", 1)
-
-    with open(path, "w") as f:
-        f.write(latex)
-
-    print(f"saved → {path}")
-
-
-export_latex(df, "results.tex")
+        df = prune_metrics(df)
+        df = df.rename(index=METRIC_LABELS)
+        df.to_csv("notebooks/metrics_wide.csv")
+        pd.set_option("display.width", 200)
+        pd.set_option("display.max_columns", None)
+        print(df)
