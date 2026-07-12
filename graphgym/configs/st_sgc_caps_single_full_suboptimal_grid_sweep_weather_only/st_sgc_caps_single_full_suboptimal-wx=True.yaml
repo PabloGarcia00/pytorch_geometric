@@ -22,7 +22,7 @@ earne_data:
   lambda_graph: 0.25
   mask_physics_impossible: false
   max_nodes: 0
-  processed_root: datasets/earne
+  processed_root: datasets/earne_weather
   require_full_span: false
   weather_features:
   - temperature_2m_om_mean

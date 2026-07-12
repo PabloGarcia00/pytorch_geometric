@@ -1,8 +1,8 @@
 custom_metrics:
-- st_caps_rmse
-- st_caps_mae
+- earne_mae_load
+- earne_mae_pv
 dataset:
-  dir: datasets/earne
+  dir: datasets/earne_dual_physmask
   format: earne_loader_new
   name: earne_exp2
   shuffle_split: false
@@ -10,8 +10,10 @@ dataset:
   task_type: regression
   transductive: false
 earne_data:
-  dual_read: false
+  dual_read: true
   energy_norm_mode:
+    consumption: log1p
+    generation: ihs
     load: log1p
     net_demand: ihs
     pv: ihs
@@ -20,9 +22,8 @@ earne_data:
   graph_mode: learned_corr
   k_neighbors: 10
   lambda_graph: 0.25
-  mask_physics_impossible: false
-  max_nodes: 0
-  processed_root: datasets/earne_weather
+  mask_physics_impossible: true
+  processed_root: datasets/earne_dual_physmask
   require_full_span: true
   weather_features:
   - temperature_2m_om_mean
@@ -31,56 +32,54 @@ earne_data:
   weather_mode: true
   weather_norm_mode:
     all_features: znorm
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
 gnn:
-  layers_mp: 0
+  act: relu
+  att_heads: 4
+  batchnorm: false
+  clear_feature: false
+  dim_inner: 64
+  dropout: 0.1
+  keep_edge: 1.0
+  l2norm: false
+  layer_type: gatconv
+  layers_mp: 3
+  layers_post_mp: 3
+  layers_pre_mp: 0
+  stage_type: stack
 metric_best: loss
 model:
-  dim_in: 1
-  loss_fun: st_caps_loss
+  dim_in: 2
+  head_name: earne_quantile
+  hidden_channels: 64
+  loss_fun: earne_loss
+  n_quantiles: 3
+  node_encoder_name: earne_temporal
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
   seq_len: 96
-  type: st_sgc_caps
-num_workers: 4
+  type: earne_network
+num_workers: 0
 optim:
   base_lr: 0.001
   max_epoch: 200
   optimizer: adam
   scheduler: warmup_cos
-out_dir: results/st_sgc_caps_single_full_optimal_grid_sweep_weather_only
-st_caps:
-  M: 8
-  M_prime: 128
-  R: 3
-  decoder_e:
-    layers:
-    - 32
-    - 64
-  decoder_s:
-    layers:
-    - 64
-    - 32
-  lambda_L: 1.0
-  lambda_PV: 1.0
-  lambda_S: 1.0
-  lambda_SC: 0.1
-  lambda_graph: 0.25
-  m: 10
-  m_prime: 12
-  n_user: 62
-  q: 85
-  routing_iterations: 2
+out_dir: results/earne_phys_dual_pw03_grid_sweep_weather_only
 train:
-  batch_size: 1
+  batch_size: 32
   ckpt_period: 10
-  crossing_weight: 0.0
+  crossing_weight: 0.05
   early_stopping:
     enable: true
     mode: min
     monitor: val_loss
     patience: 10
   eval_period: 1
-  limit_batches: 2300
   mode: earne_train
-  physics_weight: 0.0
+  physics_weight: 0.3
   train_split: 0.7
   val_split: 0.85
   warmup:

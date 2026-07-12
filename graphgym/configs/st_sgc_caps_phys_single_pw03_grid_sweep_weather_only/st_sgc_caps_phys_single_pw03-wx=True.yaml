@@ -2,7 +2,7 @@ custom_metrics:
 - st_caps_rmse
 - st_caps_mae
 dataset:
-  dir: datasets/earne
+  dir: datasets/earne_physmask
   format: earne_loader_new
   name: earne_exp2
   shuffle_split: false
@@ -20,9 +20,9 @@ earne_data:
   graph_mode: learned_corr
   k_neighbors: 10
   lambda_graph: 0.25
-  mask_physics_impossible: false
+  mask_physics_impossible: true
   max_nodes: 0
-  processed_root: datasets/earne_weather
+  processed_root: datasets/earne_physmask
   require_full_span: true
   weather_features:
   - temperature_2m_om_mean
@@ -45,7 +45,7 @@ optim:
   max_epoch: 200
   optimizer: adam
   scheduler: warmup_cos
-out_dir: results/st_sgc_caps_single_full_optimal_grid_sweep_weather_only
+out_dir: results/st_sgc_caps_phys_single_pw03_grid_sweep_weather_only
 st_caps:
   M: 8
   M_prime: 128
@@ -71,7 +71,7 @@ st_caps:
 train:
   batch_size: 1
   ckpt_period: 10
-  crossing_weight: 0.0
+  crossing_weight: 0.05
   early_stopping:
     enable: true
     mode: min
@@ -80,7 +80,7 @@ train:
   eval_period: 1
   limit_batches: 2300
   mode: earne_train
-  physics_weight: 0.0
+  physics_weight: 0.3
   train_split: 0.7
   val_split: 0.85
   warmup:
