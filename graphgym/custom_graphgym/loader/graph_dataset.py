@@ -132,10 +132,7 @@ class EARNeGraphDataset(Dataset):
             self.generation_scaled = master["generation_scaled"][
                 :, self.node_indices
             ]
-            # net is derived — never zero-filled, operational mask guards invalid regions
-            self.net_scaled = self.consumption_scaled - self.generation_scaled
-        else:
-            self.net_scaled = master["net_scaled"][:, self.node_indices]
+        self.net_scaled = master["net_scaled"][:, self.node_indices]
 
         # ── Transform (for inverse transforms at inference) ───────────────
         self.transform_obj = Transform.load(
@@ -407,10 +404,14 @@ class EARNeGraphDataset(Dataset):
         master_ids = sorted([str(i) for i in df["user_id"].unique().to_list()])
         timestamps = sorted(df["timestamp"].unique().to_list())
 
-        # ── Mask from raw pivot — no filling ──────────────────────────────
-        mask_col = "consumption_w" if self.dual_read else "net_demand_w"
-        mask_pivot = _pivot_raw(df, mask_col, master_ids)
-        mask_raw = _mask_from_pivot(mask_pivot)  # [T, N] True = present
+        # ── Mask from raw pivots — no filling ──────────────────────────────
+        # A timestep is only supervised if every column its label is derived
+        # from is present. If any activity column is NA the label can't be
+        # computed, so the whole timestep must be excluded — not just the
+        # column that happened to be missing.
+        mask_raw = torch.stack(
+            [_mask_from_pivot(_pivot_raw(df, col, master_ids)) for col in activity_cols]
+        ).all(dim=0)  # [T, N] True = every activity column present
 
         # ── Operational timeline from mask ────────────────────────────────
         mask_np = mask_raw.numpy()
@@ -555,6 +556,7 @@ class EARNeGraphDataset(Dataset):
         generation_raw = _pivot_filled(df, "generation_w", master_ids)
         load_raw = _pivot_filled(df, "load_w", master_ids)
         pv_raw = _pivot_filled(df, "inverter_w", master_ids)
+        net_raw = _pivot_filled(df, "net_demand_w", master_ids)
 
         train_mask = mask_raw[:train_end].bool()
         t.fit(
@@ -564,6 +566,7 @@ class EARNeGraphDataset(Dataset):
             generation=generation_raw[:train_end],
             load=load_raw[:train_end],
             pv=pv_raw[:train_end],
+            net_demand=net_raw[:train_end],
         )
 
         return {
@@ -571,6 +574,7 @@ class EARNeGraphDataset(Dataset):
             "generation_scaled": t.transform("generation", generation_raw),
             "load_scaled": t.transform("load", load_raw),
             "pv_scaled": t.transform("pv", pv_raw),
+            "net_scaled": t.transform("net_demand", net_raw),
         }, t
 
 
