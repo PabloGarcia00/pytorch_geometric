@@ -61,11 +61,26 @@ class BaselineCVAENetwork(nn.Module):
             dropout=dropout if num_layers > 1 else 0.0,
         )
 
-        enc_dim = hidden_dim * 2 + _TIME_DIM
+        # Time stream: identical structure to EARNeTemporalEncoder's
+        # time_encoder (stream 3) -- CNN over the full [T, 6] cyclic
+        # calendar window. hidden_dim * 2 (the LSTM's output width) plays
+        # the role of earne_temporal's emb_dim, so time_emb_dim follows the
+        # same //4 ratio relative to it.
+        time_emb_dim = (hidden_dim * 2) // 4
+        self.time_encoder = nn.Sequential(
+            nn.Conv1d(_TIME_DIM, 16, kernel_size=3, dilation=1, padding="same"),
+            nn.GELU(),
+            nn.Conv1d(16, time_emb_dim, kernel_size=3, dilation=4, padding="same"),
+            nn.GELU(),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+        )
+
+        enc_dim = hidden_dim * 2 + time_emb_dim
         self.fc_mu_z = nn.Linear(enc_dim, latent_dim)
         self.fc_log_var_z = nn.Linear(enc_dim, latent_dim)
 
-        dec_in = latent_dim + _TIME_DIM
+        dec_in = latent_dim + time_emb_dim
         self.load_head = nn.Sequential(
             nn.Linear(dec_in, decoder_dim), nn.ReLU(),
             nn.Linear(decoder_dim, 2),  # mu_load, raw_sigma_load
@@ -79,33 +94,32 @@ class BaselineCVAENetwork(nn.Module):
             nn.Linear(decoder_dim // 2, 1),  # logit for P(daytime)
         )
 
-    def _calendar(self, batch):
-        # See baseline_mlp_encoder.MLPTemporalEncoder._calendar for the
-        # broadcast/last-step rationale (batch.temporal is [B*T, 6]).
+    def _time_window(self, batch):
+        # batch.temporal is [B*T, 6] (one [T, 6] block per graph); broadcast
+        # each graph's calendar window out to its N nodes.
         N = batch.x.shape[0]
         B = batch.num_graphs
         T = self.seq_len
         temporal = batch.temporal.view(B, T, _TIME_DIM)
         nodes_per_graph = N // B
-        temporal = (
+        return (
             temporal.unsqueeze(1)
             .expand(B, nodes_per_graph, T, _TIME_DIM)
             .reshape(N, T, _TIME_DIM)
-        )
-        return temporal[:, -1, :]  # [N, 6]
+        )  # [N, T, 6]
 
-    def encode(self, x_in, t):
+    def encode(self, x_in, t_emb):
         out, _ = self.lstm(x_in)
         h = out[:, -1, :]  # [N, hidden_dim * 2]
-        ht = torch.cat([h, t], dim=-1)
+        ht = torch.cat([h, t_emb], dim=-1)
         return self.fc_mu_z(ht), self.fc_log_var_z(ht)
 
     def reparameterize(self, mu, log_var):
         std = torch.exp(0.5 * log_var)
         return mu + std * torch.randn_like(std)
 
-    def decode(self, z, t):
-        zt = torch.cat([z, t], dim=-1)
+    def decode(self, z, t_emb):
+        zt = torch.cat([z, t_emb], dim=-1)
 
         lp = self.load_head(zt)
         mu_load = lp[:, 0]
@@ -159,11 +173,12 @@ class BaselineCVAENetwork(nn.Module):
         if self.weather_mode:
             x_in = torch.cat([x_in, batch.weather], dim=-1)
 
-        t = self._calendar(batch)  # [N, 6]
+        temporal = self._time_window(batch)  # [N, T, 6]
+        t_emb = self.time_encoder(temporal.permute(0, 2, 1))  # [N, time_emb_dim]
 
-        mu_z, log_var_z = self.encode(x_in, t)
+        mu_z, log_var_z = self.encode(x_in, t_emb)
         z = self.reparameterize(mu_z, log_var_z) if self.training else mu_z
-        mu_load, sigma_load, alpha, beta, gate_logit = self.decode(z, t)
+        mu_load, sigma_load, alpha, beta, gate_logit = self.decode(z, t_emb)
 
         q_load, q_pv = self._quantiles(
             mu_load, sigma_load, alpha, beta, gate_logit

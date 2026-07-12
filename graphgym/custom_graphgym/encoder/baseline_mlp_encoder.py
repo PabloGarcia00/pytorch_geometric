@@ -11,10 +11,12 @@ class MLPTemporalEncoder(nn.Module):
     Plain MLP trunk (ported from baselines/models/mlp.py's _MLP) wired into
     EARNeNetwork's encoder slot. Flattens the [T, C] window (net demand +
     operational flag [+ weather]) into a single vector, runs it through a
-    2-layer feedforward trunk, then fuses in calendar features before
-    projecting to emb_dim -- matches EARNeTemporalEncoder's [N, emb_dim]
-    output contract so earne_network.py/earne_quantile/earne_loss need no
-    changes to consume this encoder.
+    2-layer feedforward trunk, fuses in a calendar-time embedding (same
+    time_encoder CNN stream as EARNeTemporalEncoder, run over the full
+    window rather than just the target step), and projects to emb_dim --
+    matches EARNeTemporalEncoder's [N, emb_dim] output contract so
+    earne_network.py/earne_quantile/earne_loss need no changes to consume
+    this encoder.
     """
 
     def __init__(self, emb_dim):
@@ -34,30 +36,39 @@ class MLPTemporalEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
+
+        # Time stream: identical structure to EARNeTemporalEncoder's
+        # time_encoder (stream 3) -- CNN over the full [T, 6] cyclic
+        # calendar window, output width emb_dim // 4 in the same ratio.
+        time_emb_dim = emb_dim // 4
+        self.time_encoder = nn.Sequential(
+            nn.Conv1d(6, 16, kernel_size=3, dilation=1, padding="same"),
+            nn.GELU(),
+            nn.Conv1d(16, time_emb_dim, kernel_size=3, dilation=4, padding="same"),
+            nn.GELU(),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+        )
+
         self.integration = nn.Sequential(
-            nn.Linear(hidden_dim + 6, emb_dim),
+            nn.Linear(hidden_dim + time_emb_dim, emb_dim),
             nn.LayerNorm(emb_dim),
             nn.GELU(),
         )
 
-    def _calendar(self, batch):
+    def _time_window(self, batch):
         # batch.temporal is [B*T, 6] (one [T, 6] block per graph); broadcast
-        # each graph's calendar window out to its N nodes, then take the
-        # window's last step as an approximation of the target timestep's
-        # cyclic features (avoids adding a dedicated field to the shared
-        # Data schema for a <1% phase-error approximation on smooth sin/cos
-        # features).
+        # each graph's calendar window out to its N nodes.
         N = batch.x.shape[0]
         B = batch.num_graphs
         T = self.seq_len
         temporal = batch.temporal.view(B, T, 6)
         nodes_per_graph = N // B
-        temporal = (
+        return (
             temporal.unsqueeze(1)
             .expand(B, nodes_per_graph, T, 6)
             .reshape(N, T, 6)
-        )
-        return temporal[:, -1, :]  # [N, 6]
+        )  # [N, T, 6]
 
     def forward(self, batch):
         x_in = torch.cat([batch.x, batch.operational], dim=-1)  # [N, T, C_x]
@@ -67,6 +78,8 @@ class MLPTemporalEncoder(nn.Module):
         N = x_in.shape[0]
         z = self.trunk(x_in.reshape(N, -1))
 
-        t = self._calendar(batch)
-        batch.x = self.integration(torch.cat([z, t], dim=-1))
+        temporal = self._time_window(batch)  # [N, T, 6]
+        z_time = self.time_encoder(temporal.permute(0, 2, 1))  # [N, emb_dim // 4]
+
+        batch.x = self.integration(torch.cat([z, z_time], dim=-1))
         return batch
