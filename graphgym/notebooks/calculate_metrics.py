@@ -285,10 +285,12 @@ if __name__ == "__main__":
     else:
         df_long.to_csv("notebooks/metrics_long.csv", index=False)
 
+        # wide: mean-aggregated across seeds (one column per target/sweep/run_name)
         df = df_long.pivot_table(
             index="metric",
-            columns=["target", "sweep", "run_name", "seed"],
+            columns=["target", "sweep", "run_name"],
             values="value",
+            aggfunc="mean",
         )
         df = prune_metrics(df)
         df = df.rename(index=METRIC_LABELS)
