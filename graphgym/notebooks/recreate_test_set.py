@@ -13,36 +13,42 @@
 #     name: graphgym
 # ---
 
+import json
+import os
 # %%
 import sys
 from pathlib import Path
-import os 
-import torch
+
 import pandas as pd
-import json
+import torch
+
 # Get the root directory (one level up from /notebooks)
 
 sys.path.append("/home/llan/projects/messm/pytorch_geometric-single-read/graphgym/")
 os.chdir("/home/llan/projects/messm/pytorch_geometric-single-read/graphgym")
 
+import argparse
+
 import custom_graphgym  # noqa
+import lightning as L
 import matplotlib.pyplot as plt
 import seaborn as sns
+from custom_graphgym.loader.graph_dataset import (
+    EARNeGraphDataset,
+    load_earne_dataset,
+)
 from custom_graphgym.loader.normalization import (
     denorm_ihs,
     denorm_log1p,
     denorm_minmax,
     denorm_zscore,
 )
-from custom_graphgym.loader.graph_dataset import load_earne_dataset
 
-from custom_graphgym.loader.graph_dataset import EARNeGraphDataset
 from torch_geometric.graphgym.config import cfg, load_cfg, set_cfg
 from torch_geometric.graphgym.loader import create_loader
 from torch_geometric.graphgym.model_builder import create_model
 from torch_geometric.graphgym.train import GraphGymDataModule, train
-import argparse
-import lightning as L
+
 # %load_ext autoreload
 # %autoreload 2
 
@@ -99,6 +105,8 @@ denorm_dict = {
 # %%
 # run the simulation here
 import numpy as np
+
+
 def collect_results(model, test_loader, params, load_denorm, pv_denorm):
     """Run model inference and denormalise predictions."""
     net_demand, actual_load, actual_pv, pred_load, pred_pv, mask = [], [], [], [], [], []
@@ -352,22 +360,6 @@ for i in range(len(exp_configs)):
     ckpt = torch.load(model_paths[i])
     model.load_state_dict(ckpt["state_dict"])Dag Edwin,
 
-Tijdens onze laatste maandelijkse MESSM-meeting kwam naar voren dat DSO’s actief bezig zijn met de detectie van achter-de-meter batterijsystemen. 
-Omdat dit thema nauw verwant is aan het MESSM-project, hebben Tarek en ik besloten om hierop in te haken door een promotievoorstel over dit onderwerp te schrijven.
-
-Zou jij tijd hebben om in het kader hiervan en het MESSM-project een meeting te plannen? We zouden dan:
-
-    De huidige progressie binnen MESSM doornemen en verdere interesses vanuit Be-Next afstemmen;
-
-
-    In brede zin van gedachten wisselen over de adoptie van batterijsystemen, smart home-integraties en de rol van ISP's hierin.
-
-
-Mocht je hiervoor openstaan, dan kunnen we dit eventueel on-site bij jullie op kantoor doen. Ik hoor het graag.
-
-Groetjes,
-
-Llan Almendariz
     
     # load normalization parameters
     params =  _load_norm_params()
@@ -416,6 +408,8 @@ test_loader.dataset[1]
 # %%
 # run the simulation here
 import numpy as np
+
+
 def collect_results(model, test_loader, denorm_params):
     """Run model inference and denormalise predictions."""
     net_demand, actual_load, actual_pv, pred_load, pred_pv, mask = [], [], [], [], [], []
@@ -458,10 +452,11 @@ results, mask = collect_results(model, test_loader, (p1, p2, denorm_fn))
 # %%
 np.unique(mask, return_counts=True)
 
+import matplotlib.pyplot as plt
 # %%
 import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
+
 
 def plot_regression_fit(true, pred):
     """Scatterplot with a 2nd order polynomial fit."""

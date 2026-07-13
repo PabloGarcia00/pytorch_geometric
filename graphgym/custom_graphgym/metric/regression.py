@@ -93,6 +93,28 @@ class DisaggregationMetrics:
         return cls.rmse(true_net, pred_net, mask)
 
     @classmethod
+    def export_violation(cls, true_net, pred_pv_q50, mask):
+        """
+        A prediction is physically impossible when predicted PV production is
+        less than the export implied by the true net demand — you cannot
+        export more power than you generate. true_net = consumption -
+        generation (net_demand_w), so export = max(-true_net, 0).
+
+        Returns the rate/count/severity of these violations over all masked
+        (labeled) timesteps, not just the exporting ones — so the rate is
+        directly comparable to coverage/mape denominators elsewhere.
+        """
+        t_net, p_pv = cls._prep(true_net, pred_pv_q50, mask)
+        export_true = np.clip(-t_net, 0, None)
+        shortfall = np.clip(export_true - p_pv, 0, None)
+        violated = shortfall > 1e-6
+        return {
+            "rate": float(np.mean(violated)),
+            "count": int(violated.sum()),
+            "mean_magnitude": float(shortfall[violated].mean()) if violated.any() else 0.0,
+        }
+
+    @classmethod
     def all(cls, true, pred) -> dict:
         mask = true[:, cls.TRUE_MASK, :]
 
@@ -136,5 +158,12 @@ class DisaggregationMetrics:
                 mask,
             )
         )
+
+        export_violation = cls.export_violation(
+            true[:, cls.TRUE_NET, :], pred[:, cls.PV_Q50, :], mask
+        )
+        results["pv"]["export_violation_rate"] = export_violation["rate"]
+        results["pv"]["export_violation_count"] = export_violation["count"]
+        results["pv"]["export_violation_mag"] = export_violation["mean_magnitude"]
 
         return results

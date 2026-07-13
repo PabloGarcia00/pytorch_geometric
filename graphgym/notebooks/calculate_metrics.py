@@ -215,6 +215,9 @@ METRIC_ORDER = [
     "coverage",
     "sharpness",
     "net_rmse",
+    "export_violation_rate",
+    "export_violation_count",
+    "export_violation_mag",
 ]
 METRIC_LABELS = {
     "rmse": "RMSE",
@@ -230,10 +233,14 @@ METRIC_LABELS = {
     "coverage": "Coverage",
     "sharpness": "Sharpness",
     "net_rmse": "Net RMSE",
+    "export_violation_rate": "PV<Export Rate",
+    "export_violation_count": "PV<Export Count",
+    "export_violation_mag": "PV<Export Mag (W)",
 }
 LOWER_IS_BETTER = {
     "rmse", "nrmse", "mae", "mape", "mbe", "efe",
     "net_rmse", "pinball_q10", "pinball_q50", "pinball_q90", "sharpness",
+    "export_violation_rate", "export_violation_count", "export_violation_mag",
 }
 HIGHER_IS_BETTER = {"r2", "coverage"}
 
