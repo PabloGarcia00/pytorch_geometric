@@ -1,0 +1,78 @@
+baseline:
+  cvae_daytime_threshold: 0.005
+  cvae_decoder_dim: 64
+  cvae_dropout: 0.1
+  cvae_gate_weight: 1.0
+  cvae_hidden_dim: 64
+  cvae_kl_weight: 0.1
+  cvae_latent_dim: 32
+  cvae_num_layers: 2
+  cvae_pv_eps: 0.001
+  cvae_solar_weight: 1.0
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv
+dataset:
+  dir: datasets/earne_cvae_dual_nomask
+  format: earne_loader_new
+  name: earne_exp2
+  shuffle_split: false
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  dual_read: true
+  energy_norm_mode:
+    consumption: log1p
+    generation: ihs
+    load: log1p
+    net_demand: ihs
+    pv: minmax
+  filter_ids: []
+  filter_zips: []
+  graph_mode: spatial_knn
+  k_neighbors: 0
+  mask_physics_impossible: false
+  processed_root: datasets/earne_cvae_dual_nomask
+  require_full_span: false
+  weather_features:
+  - temperature_2m_om_mean
+  - shortwave_radiation_om_mean
+  - cloud_cover_low_om_mean
+  weather_mode: true
+  weather_norm_mode:
+    all_features: znorm
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+metric_best: loss
+model:
+  dim_in: 2
+  loss_fun: cvae_loss
+  n_quantiles: 3
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
+  seq_len: 96
+  type: baseline_cvae
+num_workers: 0
+optim:
+  base_lr: 0.001
+  max_epoch: 200
+  optimizer: adam
+  scheduler: warmup_cos
+out_dir: results/baseline_cvae_dual_nomask_grid_sweep_coverage_weather
+train:
+  batch_size: 32
+  ckpt_period: 10
+  early_stopping:
+    enable: true
+    mode: min
+    monitor: val_loss
+    patience: 10
+  eval_period: 1
+  mode: earne_train
+  train_split: 0.7
+  val_split: 0.85
+  warmup:
+    enable: true
+    epochs: 10

@@ -1,0 +1,88 @@
+baseline:
+  lstm_dropout: 0.1
+  lstm_hidden_dim: 32
+  lstm_layers: 1
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv
+dataset:
+  dir: datasets/earne
+  format: earne_loader_new
+  name: earne_exp2
+  shuffle_split: false
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  dual_read: false
+  energy_norm_mode:
+    load: log1p
+    net_demand: ihs
+    pv: ihs
+  filter_ids: []
+  filter_zips: []
+  graph_mode: spatial_knn
+  k_neighbors: 0
+  mask_physics_impossible: false
+  processed_root: datasets/earne
+  require_full_span: false
+  weather_features:
+  - temperature_2m_om_mean
+  - shortwave_radiation_om_mean
+  - cloud_cover_low_om_mean
+  weather_mode: false
+  weather_norm_mode:
+    all_features: znorm
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+gnn:
+  act: relu
+  att_heads: 4
+  batchnorm: false
+  clear_feature: false
+  dim_inner: 64
+  dropout: 0.1
+  keep_edge: 1.0
+  l2norm: false
+  layer_type: gatconv
+  layers_mp: 0
+  layers_post_mp: 3
+  layers_pre_mp: 0
+  stage_type: stack
+metric_best: loss
+model:
+  dim_in: 1
+  head_name: earne_quantile
+  hidden_channels: 64
+  loss_fun: earne_loss
+  n_quantiles: 3
+  node_encoder_name: baseline_lstm_temporal
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
+  seq_len: 96
+  type: earne_network
+num_workers: 0
+optim:
+  base_lr: 0.001
+  max_epoch: 200
+  optimizer: adam
+  scheduler: warmup_cos
+out_dir: results/baseline_lstm_single_nomask_grid_sweep_coverage_weather
+train:
+  batch_size: 32
+  ckpt_period: 10
+  crossing_weight: 0.05
+  early_stopping:
+    enable: true
+    mode: min
+    monitor: val_loss
+    patience: 10
+  eval_period: 1
+  mode: earne_train
+  physics_weight: 0.0
+  train_split: 0.7
+  val_split: 0.85
+  warmup:
+    enable: true
+    epochs: 10

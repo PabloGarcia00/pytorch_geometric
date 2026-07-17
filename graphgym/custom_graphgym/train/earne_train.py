@@ -1,3 +1,4 @@
+import os
 import warnings
 from typing import Any, Dict, Optional
 
@@ -100,9 +101,14 @@ def build_trainer_and_wandb(
         )
 
     # csv logger and wandb logger
+    # Default to "<config-name>-seed<N>" instead of wandb's random
+    # adjective-animal name, so runs are identifiable in the dashboard.
+    # cfg.run_dir is "<out_dir>/<config-name>/<seed>" (set by set_run_dir).
+    config_name, seed_str = cfg.run_dir.rstrip("/").split(os.sep)[-2:]
+    default_run_name = f"{config_name}-seed{seed_str}"
     wrun = wandb.init(
         project=cfg.train.wandb.project,
-        name=cfg.train.wandb.run_name or None,
+        name=cfg.train.wandb.run_name or default_run_name,
         reinit="create_new",
     )
 
