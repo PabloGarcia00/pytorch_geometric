@@ -1,0 +1,79 @@
+baseline:
+  knn_k: 20
+  knn_feature_mode: window_calendar
+  knn_distance: euclidean
+  # Dense per-node bank (num_nodes x S_train x F) -- keep on CPU until
+  # profiled against the real dataset size; switch to "cuda" once verified
+  # to fit in GPU memory (see the implementation plan's verification notes).
+  knn_cache_device: cpu
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv
+dataset:
+  dir: datasets/earne
+  format: earne_loader_new
+  name: single_read
+  shuffle_split: false
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  energy_norm_mode:
+    consumption: log1p
+    generation: ihs
+    load: log1p
+    pv: ihs
+  filter_ids: []
+  filter_zips: []
+  graph_mode: static_corr
+  k_neighbors: 10
+  processed_root: datasets/earne
+  weather_features:
+  - solar_radiation_avg
+  - solar_radiation_max
+  - sunshine_duration_min
+  - air_temperature
+  - soil_temp_5cm
+  weather_mode: true
+  weather_norm_mode:
+    all_features: znorm
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+metric_best: loss
+model:
+  dim_in: 1
+  loss_fun: earne_loss
+  n_quantiles: 3
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
+  seq_len: 96
+  type: baseline_knn
+num_workers: 4
+optim:
+  base_lr: 0.001
+  max_epoch: 200
+  optimizer: adam
+  scheduler: warmup_cos
+out_dir: results/baseline_knn_grid
+train:
+  batch_size: 32
+  # No training curve exists for a non-gradient lookup model -- checkpointing
+  # and early stopping are meaningless here; the neighbor bank is cheap and
+  # deterministic to rebuild from data every run (see baseline_knn.py).
+  enable_ckpt: false
+  early_stopping:
+    enable: false
+    mode: min
+    monitor: val_loss
+    patience: 10
+  eval_period: 1
+  mode: knn_train
+  physics_weight: 0.0
+  train_split: 0.6
+  val_split: 0.85
+  wandb:
+    project: earne_single
+    run_name: baseline_knn-weather=True
+  warmup:
+    enable: false

@@ -49,6 +49,9 @@ gnn:
   stage_type: stack
 metric_best: loss
 model:
+  predict_targets:
+  - load
+  - pv
   dim_in: 2
   head_name: earne_quantile
   hidden_channels: 64

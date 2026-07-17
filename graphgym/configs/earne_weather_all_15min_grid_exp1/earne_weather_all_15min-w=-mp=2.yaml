@@ -30,6 +30,9 @@ gnn:
   layers_pre_mp: 0
   stage_type: stack
 model:
+  predict_targets:
+  - load
+  - pv
   graph_pooling: add
   loss_fun: earne_loss
   type: earne_network

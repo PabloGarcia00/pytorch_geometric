@@ -63,13 +63,17 @@ class EARNeLoggerCallback(LoggerCallback):
                 )
 
 
-@register_train("earne_train")
-def train(
+def build_trainer_and_wandb(
     model: GraphGymModule,
-    datamodule: GraphGymModule,
     logger: bool = True,
     trainer_config: Optional[Dict[str, Any]] = None,
 ):
+    """Shared Lightning Trainer + wandb/CSV logging construction, used by
+    both earne_train (gradient-trained models: GNN, baseline_linear,
+    baseline_svr) and knn_train (custom_graphgym/train/knn_train.py, for the
+    non-gradient baseline_knn) so every run -- regardless of how it's
+    "trained" -- produces the same stats.json/wandb run structure.
+    """
     warnings.filterwarnings("ignore", ".*use `CSVLogger` as the default.*")
 
     callbacks = []
@@ -131,6 +135,17 @@ def train(
         log_every_n_steps=1,
     )
 
+    return trainer, wrun
+
+
+@register_train("earne_train")
+def train(
+    model: GraphGymModule,
+    datamodule: GraphGymModule,
+    logger: bool = True,
+    trainer_config: Optional[Dict[str, Any]] = None,
+):
+    trainer, wrun = build_trainer_and_wandb(model, logger, trainer_config)
     trainer.fit(model, datamodule=datamodule)
     trainer.test(model, datamodule=datamodule)
     wrun.finish()

@@ -14,6 +14,9 @@ train:
   ckpt_period: 10
   physics_weight: 0.0
 model:
+  predict_targets:
+  - load
+  - pv
   type: earne_network
   loss_fun: earne_loss
   graph_pooling: add

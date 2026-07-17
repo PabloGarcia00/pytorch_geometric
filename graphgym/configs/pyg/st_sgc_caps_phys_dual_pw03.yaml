@@ -62,6 +62,9 @@ st_caps:
     layers: [64, 32]
 
 model:
+  predict_targets:
+  - load
+  - pv
   dim_in: 2
   loss_fun: st_caps_loss
   seq_len: 96

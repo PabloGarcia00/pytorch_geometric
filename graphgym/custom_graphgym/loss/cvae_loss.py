@@ -41,6 +41,12 @@ def cvae_loss_complex(pred, true):
       NLL_load + solar_weight * NLL_solar(daytime-masked)
                + gate_weight * BCE_gate + kl_weight * KL(mu_z, log_var_z)
 
+    Load/solar/gate terms are only included when the corresponding target
+    was actually predicted (cfg.model.predict_targets, default PV only) --
+    mirrors BaselineCVAENetwork.decode() only building the heads it needs.
+    KL always applies since the VAE latent is shared regardless of target
+    selection.
+
     Unlike earne_loss.py, the tensors this needs (mu_load, sigma_load,
     alpha, beta, gate_logit, mu_z, log_var_z) don't fit through the
     (pred, true) contract, so they're read from register.batch.cvae_outputs
@@ -68,20 +74,23 @@ def cvae_loss_complex(pred, true):
     pv_clamped = y_pv.clamp(pv_eps, 1.0 - pv_eps)
     day_target = (y_pv > daytime_threshold).float()
 
-    loss_load = _masked_gaussian_nll(
-        outs["mu_load"], outs["sigma_load"], y_load, mask
-    )
-    loss_solar = _masked_beta_nll(
-        outs["alpha"], outs["beta"], pv_clamped, day_target * mask
-    )
-    loss_gate = _masked_bce(outs["gate_logit"], day_target, mask)
-    loss_kl = _kl_divergence(outs["mu_z"], outs["log_var_z"])
+    total_loss = _kl_divergence(outs["mu_z"], outs["log_var_z"]) * cfg.baseline.cvae_kl_weight
 
-    total_loss = (
-        loss_load
-        + cfg.baseline.cvae_solar_weight * loss_solar
-        + cfg.baseline.cvae_gate_weight * loss_gate
-        + cfg.baseline.cvae_kl_weight * loss_kl
-    )
+    if "mu_load" in outs:
+        loss_load = _masked_gaussian_nll(
+            outs["mu_load"], outs["sigma_load"], y_load, mask
+        )
+        total_loss = total_loss + loss_load
+
+    if "alpha" in outs:
+        loss_solar = _masked_beta_nll(
+            outs["alpha"], outs["beta"], pv_clamped, day_target * mask
+        )
+        loss_gate = _masked_bce(outs["gate_logit"], day_target, mask)
+        total_loss = (
+            total_loss
+            + cfg.baseline.cvae_solar_weight * loss_solar
+            + cfg.baseline.cvae_gate_weight * loss_gate
+        )
 
     return total_loss, pred

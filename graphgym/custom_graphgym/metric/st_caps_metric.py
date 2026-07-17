@@ -6,6 +6,7 @@ import torch
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_metric
 
+from ..target_utils import active_targets
 from ..transform.transform import Transform
 
 _TRANSFORM_CACHE = {}
@@ -30,45 +31,38 @@ def _get_transform() -> Transform:
 def compute_st_caps_errors(true_list, pred_list) -> Dict[str, float]:
     """
     true_list: list of tensors [N, 4] (y_load, y_pv, mask, y_net_demand) — scaled space
-    pred_list: list of tensors [N, 2]  (load_pred, pv_pred)               — scaled space
+    pred_list: list of tensors [N, len(targets)] (one column per
+        cfg.model.predict_targets entry, in active_targets() order)      — scaled space
 
-    Denormalizes both streams back into watts before scoring, masked to
-    timesteps that actually have a label (mirrors compute_earne_mae).
+    Denormalizes the selected stream(s) back into watts before scoring,
+    masked to timesteps that actually have a label (mirrors compute_earne_mae).
+    Averages "mae"/"rmse" only over whichever target(s) were predicted.
     """
     t = _get_transform()
+    targets = active_targets()
+    true_col = {"load": 0, "pv": 1}
 
-    total_abs_load = total_sq_load = 0.0
-    total_abs_pv = total_sq_pv = 0.0
-    total_load_nodes = total_pv_nodes = 0.0
+    totals = {name: {"abs": 0.0, "sq": 0.0, "n": 0.0} for name in targets}
 
     for true, pred in zip(true_list, pred_list):
         mask = true[:, 2]
+        for i, name in enumerate(targets):
+            err = t.inverse_transform(name, pred[:, i]) - t.inverse_transform(
+                name, true[:, true_col[name]]
+            )
+            totals[name]["abs"] += (err.abs() * mask).sum().item()
+            totals[name]["sq"] += ((err**2) * mask).sum().item()
+            totals[name]["n"] += mask.sum().item()
 
-        err_load = t.inverse_transform("load", pred[:, 0]) - t.inverse_transform(
-            "load", true[:, 0]
-        )
-        err_pv = t.inverse_transform("pv", pred[:, 1]) - t.inverse_transform(
-            "pv", true[:, 1]
-        )
-
-        total_abs_load += (err_load.abs() * mask).sum().item()
-        total_sq_load += ((err_load**2) * mask).sum().item()
-        total_abs_pv += (err_pv.abs() * mask).sum().item()
-        total_sq_pv += ((err_pv**2) * mask).sum().item()
-        total_load_nodes += mask.sum().item()
-        total_pv_nodes += mask.sum().item()
-
-    if total_load_nodes == 0:
+    if any(totals[name]["n"] == 0 for name in targets):
         return {"mae": 0.0, "rmse": 0.0}
 
-    mae_load = total_abs_load / total_load_nodes
-    mae_pv = total_abs_pv / total_pv_nodes
-    rmse_load = (total_sq_load / total_load_nodes) ** 0.5
-    rmse_pv = (total_sq_pv / total_pv_nodes) ** 0.5
+    maes = [totals[name]["abs"] / totals[name]["n"] for name in targets]
+    rmses = [(totals[name]["sq"] / totals[name]["n"]) ** 0.5 for name in targets]
 
     return {
-        "mae": (mae_load + mae_pv) / 2.0,
-        "rmse": (rmse_load + rmse_pv) / 2.0,
+        "mae": sum(maes) / len(maes),
+        "rmse": sum(rmses) / len(rmses),
     }
 
 

@@ -29,6 +29,9 @@ train:
     project: earne_dual
 
 model:
+  predict_targets:
+  - load
+  - pv
   type: earne_network
   node_encoder_name: earne_temporal
   head_name: earne_quantile

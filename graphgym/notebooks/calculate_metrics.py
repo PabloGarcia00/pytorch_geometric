@@ -11,6 +11,7 @@ import torch
 import tqdm
 import yaml
 from custom_graphgym.metric.regression import DisaggregationMetrics
+from custom_graphgym.target_utils import active_targets
 
 from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
 from torch_geometric.data.storage import GlobalStorage
@@ -98,6 +99,9 @@ def discover_manifest(results_root: Path | str = RESULTS_ROOT) -> pd.DataFrame:
                     "model_type": model_cfg.get("type"),
                     "dim_in": model_cfg.get("dim_in"),
                     "n_quantiles": model_cfg.get("n_quantiles"),
+                    # absent in configs predating cfg.model.predict_targets
+                    # -- those were always dual-target (load + PV)
+                    "predict_targets": model_cfg.get("predict_targets", ["load", "pv"]),
                     "test_loss": test_stats.get("loss"),
                     "test_mae_load": test_stats.get("earne_mae_load"),
                     "test_mae_pv": test_stats.get("earne_mae_pv"),
@@ -109,6 +113,15 @@ def discover_manifest(results_root: Path | str = RESULTS_ROOT) -> pd.DataFrame:
 
 
 # ── disaggregation (inference on the test split) ───────────────────────────────
+# Model types with no trainable parameters -- "fitting" is a deterministic,
+# no-grad cache population over the training split (see
+# custom_graphgym/network/baseline_knn.py's fit_cache), not something saved
+# to a checkpoint -- so there's no ckpt_path to reload here. Rebuilding the
+# cache from the training split is cheap and gives identical results to
+# whatever the original training run cached.
+CACHE_FIT_MODEL_TYPES = {"baseline_knn"}
+
+
 def _load_state_dict(ckpt_path: Path, model: torch.nn.Module) -> None:
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint.get("state_dict", checkpoint.get("model_state_dict", checkpoint))
@@ -123,30 +136,41 @@ def _load_state_dict(ckpt_path: Path, model: torch.nn.Module) -> None:
     model.load_state_dict(state_dict)
 
 
-def disaggregate_test_set(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor] | None:
+def disaggregate_test_set(
+    row: pd.Series,
+) -> tuple[torch.Tensor, torch.Tensor, list[str]] | None:
     """
     Load `row`'s config + checkpoint, run inference over its test split, and
     denormalize predictions/labels back into physical units (W).
 
-    Returns (true, pred) as [num_nodes, channels, timesteps]:
-        true: [N, 4, T]  — y_load, y_pv, mask, y_net_demand
-        pred: [N, 6, T]  — load_q10, load_q50, load_q90, pv_q10, pv_q50, pv_q90
+    Returns (true, pred, user_ids):
+        true: [N, 4, T]  — y_load, y_pv, mask, y_net_demand (always both,
+            regardless of what was predicted)
+        pred: [N, n_quantiles * len(targets), T] — one quantile block per
+            cfg.model.predict_targets entry, in active_targets() order
+        user_ids: length-N list, aligned with true/pred's node dimension
     or None if the dataset/checkpoint for this run isn't available on this machine.
     """
-    if row["ckpt_path"] is None:
+    cache_fit = row["model_type"] in CACHE_FIT_MODEL_TYPES
+    if row["ckpt_path"] is None and not cache_fit:
         return None
 
     cfg.set_new_allowed(True)
     load_cfg(cfg, argparse.Namespace(cfg_file=str(row["config_path"]), opts=[]))
     cfg.accelerator = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(cfg.accelerator)
+    targets = active_targets()
+    n_q = cfg.model.n_quantiles
 
     datamodule = GraphGymDataModule()
     test_loader = datamodule.test_dataloader()
     dataset = test_loader.dataset
 
     model = create_model()
-    _load_state_dict(row["ckpt_path"], model)
+    if cache_fit:
+        model.model.fit_cache(datamodule.train_dataloader())
+    else:
+        _load_state_dict(row["ckpt_path"], model)
     model = model.to(device).eval()
 
     true_chunks, pred_chunks = [], []
@@ -154,13 +178,13 @@ def disaggregate_test_set(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor] |
         for batch in test_loader:
             batch = batch.to(device)
             pred, true = model(batch)  # (pred, true) per GraphGymModule.forward()
-            # pred: [N, n_quantiles * 2]  (load + PV quantiles)
+            # pred: [N, n_quantiles * len(targets)]
             # true: [N, 4]                (y_load, y_pv, mask, y_net_demand)
 
             t_per_batch = pred.shape[0] // dataset.num_nodes
             pred_chunks.append(
-                pred.reshape(dataset.num_nodes, t_per_batch, cfg.model.n_quantiles * 2)
-                .permute(0, 2, 1)  # → [num_nodes, 6, t_per_batch]
+                pred.reshape(dataset.num_nodes, t_per_batch, n_q * len(targets))
+                .permute(0, 2, 1)  # → [num_nodes, n_q * len(targets), t_per_batch]
                 .cpu()
             )
             true_chunks.append(
@@ -175,8 +199,8 @@ def disaggregate_test_set(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor] |
     t = dataset.transform_obj
     pred_denorm = torch.cat(
         [
-            t.inverse_transform("load", pred[:, :3]),
-            t.inverse_transform("pv", pred[:, 3:]),
+            t.inverse_transform(name, pred[:, i * n_q : (i + 1) * n_q])
+            for i, name in enumerate(targets)
         ],
         dim=1,
     )
@@ -189,16 +213,27 @@ def disaggregate_test_set(row: pd.Series) -> tuple[torch.Tensor, torch.Tensor] |
         ],
         dim=1,
     )
-    return true_denorm, pred_denorm
+    return true_denorm, pred_denorm, dataset.active_ids
 
 
 def compute_metrics(row: pd.Series) -> dict | None:
-    """Disaggregate `row`'s test set and score it with DisaggregationMetrics."""
+    """Disaggregate `row`'s test set and score it (pooled across all users) with DisaggregationMetrics."""
     result = disaggregate_test_set(row)
     if result is None:
         return None
-    true, pred = result
-    return DisaggregationMetrics.all(true.numpy(), pred.numpy())
+    true, pred, _ = result
+    # cfg still reflects `row`'s config -- disaggregate_test_set's load_cfg
+    # call mutated the module-level singleton and nothing has touched it
+    # since (this call happens immediately after, synchronously).
+    targets = active_targets()
+    q50_idx = cfg.model.quantiles.index(0.5)
+    return DisaggregationMetrics.all(
+        true.numpy(),
+        pred.numpy(),
+        targets=targets,
+        n_quantiles=cfg.model.n_quantiles,
+        q50_idx=q50_idx,
+    )
 
 
 # ── metric selection ─────────────────────────────────────────────────────────
@@ -260,7 +295,10 @@ if __name__ == "__main__":
     print(f"Discovered {len(manifest)} runs across {manifest['sweep'].nunique()} sweeps")
 
     records = []
-    runnable = manifest[manifest["ckpt_path"].notna()]
+    runnable = manifest[
+        manifest["ckpt_path"].notna()
+        | manifest["model_type"].isin(CACHE_FIT_MODEL_TYPES)
+    ]
     skipped = len(manifest) - len(runnable)
     if skipped:
         print(f"Skipping {skipped} runs — no checkpoint")

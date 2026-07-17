@@ -8,6 +8,8 @@ import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_network
 
+from ..target_utils import active_targets
+
 _TIME_DIM = 6
 
 
@@ -19,17 +21,26 @@ class BaselineCVAENetwork(nn.Module):
     for load, a Beta head for PV (bounded [0,1]), and a gate head
     (P(daytime)) that zero-inflates the PV distribution at night.
 
-    Unlike earne_network.py's Encoder/Head split, this doesn't fit the
-    single Head(dim_in, dim_out) -> [N, 2*n_quantiles] convention cleanly --
-    the loss needs mu_z/log_var_z/gate_logit/etc, not just quantiles -- so
-    it's a full @register_network implementing forward(batch) -> (pred,
-    true) directly, using the register.batch stash pattern already
-    established by st_sgc_caps.py / st_caps_loss.py to hand auxiliary
-    tensors to cvae_loss.
+    Which of load_head / (solar_head + gate_head) get built and run is
+    driven by cfg.model.predict_targets (default: PV only) -- the VAE
+    encoder/latent (mu_z, log_var_z) is shared regardless of target
+    selection (it's one latent per household-timestep, not target-specific),
+    but the decode heads are already architecturally independent sub-
+    networks, so the unselected one is skipped entirely rather than merely
+    excluded from the loss.
 
-    pred's first 2*n_quantiles columns are still [q_load, q_pv] (derived
-    from the fitted Normal/Beta each forward call) so the shared
-    earne_mae_load/earne_mae_pv metrics keep working unmodified.
+    Unlike earne_network.py's Encoder/Head split, this doesn't fit the
+    single Head(dim_in, dim_out) -> [N, n_quantiles * n_targets] convention
+    cleanly -- the loss needs mu_z/log_var_z/gate_logit/etc, not just
+    quantiles -- so it's a full @register_network implementing
+    forward(batch) -> (pred, true) directly, using the register.batch stash
+    pattern already established by st_sgc_caps.py / st_caps_loss.py to hand
+    auxiliary tensors to cvae_loss.
+
+    pred's columns are still per-target quantiles (derived from the fitted
+    Normal/Beta each forward call), one block per entry of active_targets(),
+    so the shared earne_mae_load/earne_mae_pv metrics keep working
+    unmodified.
     """
 
     def __init__(self, dim_in, dim_out, **kwargs):
@@ -39,6 +50,7 @@ class BaselineCVAENetwork(nn.Module):
 
         self.seq_len = cfg.model.seq_len
         self.quantiles = cfg.model.quantiles
+        self.targets = active_targets()
 
         self.weather_mode = cfg.earne_data.weather_mode
         self.n_weather = (
@@ -81,18 +93,20 @@ class BaselineCVAENetwork(nn.Module):
         self.fc_log_var_z = nn.Linear(enc_dim, latent_dim)
 
         dec_in = latent_dim + time_emb_dim
-        self.load_head = nn.Sequential(
-            nn.Linear(dec_in, decoder_dim), nn.ReLU(),
-            nn.Linear(decoder_dim, 2),  # mu_load, raw_sigma_load
-        )
-        self.solar_head = nn.Sequential(
-            nn.Linear(dec_in, decoder_dim), nn.ReLU(),
-            nn.Linear(decoder_dim, 2),  # raw_alpha, raw_beta
-        )
-        self.gate_head = nn.Sequential(
-            nn.Linear(dec_in, decoder_dim // 2), nn.ReLU(),
-            nn.Linear(decoder_dim // 2, 1),  # logit for P(daytime)
-        )
+        if "load" in self.targets:
+            self.load_head = nn.Sequential(
+                nn.Linear(dec_in, decoder_dim), nn.ReLU(),
+                nn.Linear(decoder_dim, 2),  # mu_load, raw_sigma_load
+            )
+        if "pv" in self.targets:
+            self.solar_head = nn.Sequential(
+                nn.Linear(dec_in, decoder_dim), nn.ReLU(),
+                nn.Linear(decoder_dim, 2),  # raw_alpha, raw_beta
+            )
+            self.gate_head = nn.Sequential(
+                nn.Linear(dec_in, decoder_dim // 2), nn.ReLU(),
+                nn.Linear(decoder_dim // 2, 1),  # logit for P(daytime)
+            )
 
     def _time_window(self, batch):
         # batch.temporal is [B*T, 6] (one [T, 6] block per graph); broadcast
@@ -119,54 +133,66 @@ class BaselineCVAENetwork(nn.Module):
         return mu + std * torch.randn_like(std)
 
     def decode(self, z, t_emb):
-        zt = torch.cat([z, t_emb], dim=-1)
-
-        lp = self.load_head(zt)
-        mu_load = lp[:, 0]
-        sigma_load = F.softplus(lp[:, 1]) + 1e-4
-
-        sp = self.solar_head(zt)
-        alpha = F.softplus(sp[:, 0]) + 1e-4
-        beta = F.softplus(sp[:, 1]) + 1e-4
-
-        gate_logit = self.gate_head(zt).squeeze(-1)
-
-        return mu_load, sigma_load, alpha, beta, gate_logit
-
-    def _quantiles(self, mu_load, sigma_load, alpha, beta, gate_logit):
+        """Returns a dict with only the entries for active_targets():
+        {"mu_load", "sigma_load"} if "load" is selected, and/or
+        {"alpha", "beta", "gate_logit"} if "pv" is selected.
         """
-        Vectorized derivation of [N, n_quantiles] load/pv quantiles from the
-        fitted distributions. Runs every forward() call (train/val/test),
-        unlike the original standalone CVAEBaseline.predict(), whose nested
-        Python loop over scipy.stats.beta.ppf only ran once at final eval --
+        zt = torch.cat([z, t_emb], dim=-1)
+        out = {}
+
+        if "load" in self.targets:
+            lp = self.load_head(zt)
+            out["mu_load"] = lp[:, 0]
+            out["sigma_load"] = F.softplus(lp[:, 1]) + 1e-4
+
+        if "pv" in self.targets:
+            sp = self.solar_head(zt)
+            out["alpha"] = F.softplus(sp[:, 0]) + 1e-4
+            out["beta"] = F.softplus(sp[:, 1]) + 1e-4
+            out["gate_logit"] = self.gate_head(zt).squeeze(-1)
+
+        return out
+
+    def _quantiles(self, decoded):
+        """Vectorized derivation of [N, n_quantiles] quantiles per selected
+        target from the fitted distributions. Runs every forward() call
+        (train/val/test), unlike the original standalone
+        CVAEBaseline.predict(), whose nested Python loop over
+        scipy.stats.beta.ppf only ran once at final eval --
         scipy.stats.beta.ppf broadcasts over arrays natively, so a single
         vectorized call replaces that loop.
+
+        Returns a dict with only the entries for active_targets().
         """
-        device = mu_load.device
+        device = next(iter(decoded.values())).device
         q = torch.tensor(self.quantiles, dtype=torch.float32, device=device)
+        out = {}
 
-        q_load = torch.distributions.Normal(
-            mu_load.unsqueeze(-1), sigma_load.unsqueeze(-1)
-        ).icdf(q.unsqueeze(0))  # [N, Q]
+        if "load" in self.targets:
+            out["load"] = torch.distributions.Normal(
+                decoded["mu_load"].unsqueeze(-1), decoded["sigma_load"].unsqueeze(-1)
+            ).icdf(q.unsqueeze(0))  # [N, Q]
 
-        p_day = torch.sigmoid(gate_logit)
-        p_night = 1.0 - p_day
+        if "pv" in self.targets:
+            gate_logit = decoded["gate_logit"]
+            p_day = torch.sigmoid(gate_logit)
+            p_night = 1.0 - p_day
 
-        q_np = q.cpu().numpy()[None, :]  # [1, Q]
-        p_day_np = p_day.detach().cpu().numpy()[:, None]  # [N, 1]
-        p_night_np = p_night.detach().cpu().numpy()[:, None]  # [N, 1]
-        alpha_np = alpha.detach().cpu().numpy()[:, None]  # [N, 1]
-        beta_np = beta.detach().cpu().numpy()[:, None]  # [N, 1]
+            q_np = q.cpu().numpy()[None, :]  # [1, Q]
+            p_day_np = p_day.detach().cpu().numpy()[:, None]  # [N, 1]
+            p_night_np = p_night.detach().cpu().numpy()[:, None]  # [N, 1]
+            alpha_np = decoded["alpha"].detach().cpu().numpy()[:, None]  # [N, 1]
+            beta_np = decoded["beta"].detach().cpu().numpy()[:, None]  # [N, 1]
 
-        q_eff = np.clip(
-            (q_np - p_night_np) / np.clip(p_day_np, 1e-6, None), 1e-6, 1 - 1e-6
-        )
-        pv_q_np = np.where(
-            q_np > p_night_np, scipy_beta.ppf(q_eff, alpha_np, beta_np), 0.0
-        )
-        q_pv = torch.tensor(pv_q_np, dtype=torch.float32, device=device)
+            q_eff = np.clip(
+                (q_np - p_night_np) / np.clip(p_day_np, 1e-6, None), 1e-6, 1 - 1e-6
+            )
+            pv_q_np = np.where(
+                q_np > p_night_np, scipy_beta.ppf(q_eff, alpha_np, beta_np), 0.0
+            )
+            out["pv"] = torch.tensor(pv_q_np, dtype=torch.float32, device=device)
 
-        return q_load, q_pv
+        return out
 
     def forward(self, batch):
         x_in = torch.cat([batch.x, batch.operational], dim=-1)  # [N, T, C_in]
@@ -178,22 +204,12 @@ class BaselineCVAENetwork(nn.Module):
 
         mu_z, log_var_z = self.encode(x_in, t_emb)
         z = self.reparameterize(mu_z, log_var_z) if self.training else mu_z
-        mu_load, sigma_load, alpha, beta, gate_logit = self.decode(z, t_emb)
+        decoded = self.decode(z, t_emb)
 
-        q_load, q_pv = self._quantiles(
-            mu_load, sigma_load, alpha, beta, gate_logit
-        )
-        pred = torch.cat([q_load, q_pv], dim=1)  # [N, 2 * n_quantiles]
+        q_by_target = self._quantiles(decoded)
+        pred = torch.cat([q_by_target[t] for t in self.targets], dim=1)
 
-        batch.cvae_outputs = {
-            "mu_load": mu_load,
-            "sigma_load": sigma_load,
-            "alpha": alpha,
-            "beta": beta,
-            "gate_logit": gate_logit,
-            "mu_z": mu_z,
-            "log_var_z": log_var_z,
-        }
+        batch.cvae_outputs = {**decoded, "mu_z": mu_z, "log_var_z": log_var_z}
         register.batch = batch
 
         true = torch.stack(

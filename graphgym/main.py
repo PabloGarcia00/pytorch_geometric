@@ -3,7 +3,6 @@ import os
 
 import custom_graphgym  # noqa, register custom modules
 import torch
-from custom_graphgym.train.earne_train import train
 
 from torch_geometric import seed_everything
 from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
@@ -16,6 +15,7 @@ from torch_geometric.graphgym.config import (
     set_out_dir,
     set_run_dir,
 )
+import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.logger import set_printing
 from torch_geometric.graphgym.model_builder import create_model
 from torch_geometric.graphgym.train import GraphGymDataModule
@@ -63,7 +63,12 @@ if __name__ == "__main__":
             )
             cfg.params = 0
         logging.info("Num parameters: %s", cfg.params)
-        train(model, datamodule, logger=True)
+        # Dispatch via the @register_train registry (cfg.train.mode) rather
+        # than a hardcoded import -- lets non-gradient baselines (e.g.
+        # baseline_knn's "knn_train") select their own train-loop entry
+        # point alongside the default "earne_train".
+        train_fn = register.train_dict[cfg.train.mode]
+        train_fn(model, datamodule, logger=True)
 
     # Aggregate results from different seeds
     agg_runs(cfg.out_dir, cfg.metric_best)

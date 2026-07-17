@@ -7,6 +7,8 @@ import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_loss
 
+from ..target_utils import active_targets
+
 
 @register_loss('st_caps_loss')
 def st_caps_loss_complex(pred, true):
@@ -77,11 +79,23 @@ class DisaggregationLoss(nn.Module):
         load_true: torch.Tensor,
         pv_pred: torch.Tensor,
         pv_true: torch.Tensor,
+        targets: Tuple[str, ...] = ('load', 'pv'),
     ) -> Tuple[torch.Tensor, Dict]:
-        j_L = F.mse_loss(load_pred, load_true)
-        j_PV = F.mse_loss(pv_pred, pv_true)
-        total = self.lambda_L * j_L + self.lambda_PV * j_PV
-        return total, {'load_loss': j_L.item(), 'pv_loss': j_PV.item(), 'est_loss': total.item()}
+        # load_pred/pv_pred are always computed jointly by the capsule
+        # regressor (shared routing), but only the selected target(s) --
+        # cfg.model.predict_targets, default PV only -- contribute to loss.
+        total = torch.tensor(0.0, device=load_pred.device)
+        metrics = {}
+        if 'load' in targets:
+            j_L = F.mse_loss(load_pred, load_true)
+            total = total + self.lambda_L * j_L
+            metrics['load_loss'] = j_L.item()
+        if 'pv' in targets:
+            j_PV = F.mse_loss(pv_pred, pv_true)
+            total = total + self.lambda_PV * j_PV
+            metrics['pv_loss'] = j_PV.item()
+        metrics['est_loss'] = total.item()
+        return total, metrics
 
 
 class PhysicsLoss(nn.Module):
@@ -135,14 +149,24 @@ class STSGCCapsLoss(nn.Module):
             total_loss = total_loss + sc_loss
             metrics.update(sc_metrics)
 
+        targets = active_targets()
         disagg_loss, disagg_metrics = self.disagg_loss(
             outputs['load_pred'], outputs['load_true'],
             outputs['pv_pred'], outputs['pv_true'],
+            targets=targets,
         )
         total_loss = total_loss + disagg_loss
         metrics.update(disagg_metrics)
 
-        if self.physics_weight > 0.0 and mask is not None and net_demand_true is not None:
+        # Physics constraint (load - pv = net_demand) only makes sense when
+        # both targets are being predicted.
+        if (
+            self.physics_weight > 0.0
+            and mask is not None
+            and net_demand_true is not None
+            and 'load' in targets
+            and 'pv' in targets
+        ):
             physics_loss, physics_metrics = self.physics_loss(
                 outputs['load_pred'], outputs['pv_pred'], net_demand_true, mask,
             )

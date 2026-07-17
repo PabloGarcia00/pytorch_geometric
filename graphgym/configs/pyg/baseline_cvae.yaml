@@ -27,6 +27,9 @@ train:
     epochs: 10
 
 model:
+  predict_targets:
+  - load
+  - pv
   # BaselineCVAENetwork builds its own encoder/heads internally --
   # node_encoder_name/head_name/hidden_channels are inherited defaults and
   # unused for this model type.

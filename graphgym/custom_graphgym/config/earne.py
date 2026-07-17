@@ -91,6 +91,12 @@ def set_cfg_earne(cfg):
     cfg.model.hidden_channels = 64
     cfg.model.n_quantiles = 3
     cfg.model.quantiles = [0.1, 0.5, 0.9]
+    # Which component(s) to predict: subset of ["load", "pv"]. Applies to
+    # every registered network (earne_network, baseline_linear/svr/knn,
+    # baseline_cvae, st_sgc_caps) via custom_graphgym/target_utils.py's
+    # active_targets(). Output column order is always load-before-pv when
+    # both are selected, regardless of the order listed here.
+    cfg.model.predict_targets = ["pv"]
 
     # ----------------------------------------------------------------------- #
     # Train options

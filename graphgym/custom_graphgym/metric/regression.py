@@ -1,9 +1,5 @@
 import numpy as np
 
-# channel indices — pred: [N, 6, T]
-LOAD_Q10, LOAD_Q50, LOAD_Q90 = 0, 1, 2
-PV_Q10, PV_Q50, PV_Q90 = 3, 4, 5
-
 # channel indices — true: [N, 4, T]
 TRUE_LOAD, TRUE_PV, TRUE_MASK, TRUE_NET = 0, 1, 2, 3
 
@@ -14,13 +10,13 @@ class DisaggregationMetrics:
     """
     All metrics for load/PV disaggregation with quantile predictions.
 
-    pred : [N, 6, T]  — load_q10, load_q50, load_q90, pv_q10, pv_q50, pv_q90
-    true : [N, 4, T]  — y_load, y_pv, mask, y_net_demand
+    pred's target/quantile layout is variable -- see .all()'s `targets`/
+    `n_quantiles`/`q50_idx` params, which mirror
+    cfg.model.predict_targets (default: PV only) and cfg.model.quantiles.
+    true : [N, 4, T]  — y_load, y_pv, mask, y_net_demand (always both,
+    regardless of what was predicted).
     """
 
-    # mirror module-level constants onto the class so cls. access works
-    LOAD_Q10, LOAD_Q50, LOAD_Q90 = 0, 1, 2
-    PV_Q10, PV_Q50, PV_Q90 = 3, 4, 5
     TRUE_LOAD, TRUE_PV, TRUE_MASK, TRUE_NET = 0, 1, 2, 3
 
     @staticmethod
@@ -111,30 +107,48 @@ class DisaggregationMetrics:
         return {
             "rate": float(np.mean(violated)),
             "count": int(violated.sum()),
-            "mean_magnitude": float(shortfall[violated].mean()) if violated.any() else 0.0,
+            "mean_magnitude": (
+                float(shortfall[violated].mean()) if violated.any() else 0.0
+            ),
         }
 
     @classmethod
-    def all(cls, true, pred) -> dict:
-        mask = true[:, cls.TRUE_MASK, :]
+    def all(
+        cls,
+        true,
+        pred,
+        targets=("load", "pv"),
+        n_quantiles=3,
+        q50_idx=1,
+    ) -> dict:
+        """
+        targets: which component(s) pred's columns hold, in order (mirrors
+            cfg.model.predict_targets via custom_graphgym.target_utils.
+            active_targets() -- defaults preserve this function's historical
+            behavior for models that always predict both).
+        n_quantiles / q50_idx: quantile count per target block and the
+            index of the median within it (defaults match
+            cfg.model.quantiles = [0.1, 0.5, 0.9]).
 
-        targets = {
-            "load": (
-                true[:, cls.TRUE_LOAD, :],
-                pred[:, cls.LOAD_Q10, :],
-                pred[:, cls.LOAD_Q50, :],
-                pred[:, cls.LOAD_Q90, :],
-            ),
-            "pv": (
-                true[:, cls.TRUE_PV, :],
-                pred[:, cls.PV_Q10, :],
-                pred[:, cls.PV_Q50, :],
-                pred[:, cls.PV_Q90, :],
-            ),
-        }
+        pred : [N, n_quantiles * len(targets), T] — one quantile block per
+            target, in `targets` order (q10 at offset 0, q90 at offset
+            n_quantiles - 1 within each block)
+        true : [N, 4, T] — y_load, y_pv, mask, y_net_demand (always both,
+            regardless of what was predicted -- ground truth doesn't depend
+            on predict_targets)
+        """
+        mask = true[:, cls.TRUE_MASK, :]
+        true_idx = {"load": cls.TRUE_LOAD, "pv": cls.TRUE_PV}
 
         results = {}
-        for name, (t, q10, q50, q90) in targets.items():
+        q50_by_target = {}
+        for i, name in enumerate(targets):
+            t = true[:, true_idx[name], :]
+            q10 = pred[:, i * n_quantiles, :]
+            q50 = pred[:, i * n_quantiles + q50_idx, :]
+            q90 = pred[:, i * n_quantiles + (n_quantiles - 1), :]
+            q50_by_target[name] = q50
+
             results[name] = {
                 "rmse": float(cls.rmse(t, q50, mask)),
                 "nrmse": float(cls.nrmse(t, q50, mask)),
@@ -150,20 +164,25 @@ class DisaggregationMetrics:
                 "sharpness": float(cls.sharpness(q10, q90, mask)),
             }
 
-        results["load"]["net_rmse"] = float(
-            cls.net_demand_rmse(
-                true[:, cls.TRUE_NET, :],
-                pred[:, cls.LOAD_Q50, :],
-                pred[:, cls.PV_Q50, :],
-                mask,
+        # These two need both load and PV q50 -- only computable when both
+        # were predicted.
+        if "load" in q50_by_target and "pv" in q50_by_target:
+            results["load"]["net_rmse"] = float(
+                cls.net_demand_rmse(
+                    true[:, cls.TRUE_NET, :],
+                    q50_by_target["load"],
+                    q50_by_target["pv"],
+                    mask,
+                )
             )
-        )
 
-        export_violation = cls.export_violation(
-            true[:, cls.TRUE_NET, :], pred[:, cls.PV_Q50, :], mask
-        )
-        results["pv"]["export_violation_rate"] = export_violation["rate"]
-        results["pv"]["export_violation_count"] = export_violation["count"]
-        results["pv"]["export_violation_mag"] = export_violation["mean_magnitude"]
+            export_violation = cls.export_violation(
+                true[:, cls.TRUE_NET, :], q50_by_target["pv"], mask
+            )
+            results["pv"]["export_violation_rate"] = export_violation["rate"]
+            results["pv"]["export_violation_count"] = export_violation["count"]
+            results["pv"]["export_violation_mag"] = export_violation[
+                "mean_magnitude"
+            ]
 
         return results

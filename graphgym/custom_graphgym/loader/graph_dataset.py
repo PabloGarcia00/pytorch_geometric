@@ -447,7 +447,7 @@ class EARNeGraphDataset(Dataset):
             .with_columns(pl.col("zipcode").fill_null(0).cast(pl.Int64))
         )
         coords_df = pd.read_csv(cfg.earne_data.zipcode_coords)
-        zip_to_latlon = coords_df.set_index("two_number_zip")[
+        zip_to_latlon = coords_df.set_index("zipcode")[
             ["latitude", "longitude"]
         ]
         zips = mac_zip["zipcode"].to_pandas()
@@ -508,8 +508,13 @@ class EARNeGraphDataset(Dataset):
         if not use_weather or not weather_cols:
             return None, []
 
-        mean_cols = [f for f in weather_cols if not f.endswith("_std")]
+        mean_cols = [f for f in weather_cols if f.endswith("_mean")]
         std_cols = [f for f in weather_cols if f.endswith("_std")]
+        # Flag-style columns (e.g. is_clear_sky_day) have no _mean/_std pair
+        # and pass through unpaired, instead of being swept into mean_cols.
+        other_cols = [
+            f for f in weather_cols if f not in mean_cols and f not in std_cols
+        ]
 
         if mean_cols and std_cols:
             assert len(mean_cols) == len(
@@ -519,7 +524,7 @@ class EARNeGraphDataset(Dataset):
                 std_cols
             ), f"Mean/std pairs don't match.\nMeans: {mean_cols}\nStds: {std_cols}"
 
-        ordered_cols = mean_cols + std_cols
+        ordered_cols = mean_cols + std_cols + other_cols
 
         weather_arrays = []
         for col in ordered_cols:
@@ -527,6 +532,8 @@ class EARNeGraphDataset(Dataset):
                 df.pivot(index="timestamp", on="user_id", values=col)
                 .sort("timestamp")
                 .select(master_ids)
+                .cast(pl.Float32)  # non-float cols (e.g. boolean flags) need
+                # a numeric dtype before forward_fill/fill_null can run
                 .select(pl.all().forward_fill().fill_null(0.0))
                 .to_numpy()
             )
@@ -597,4 +604,10 @@ def load_earne_dataset(format, name, dataset_dir):
     dataset.data.train_graph_index = torch.tensor(train_idx, dtype=torch.long)
     dataset.data.val_graph_index = torch.tensor(val_idx, dtype=torch.long)
     dataset.data.test_graph_index = torch.tensor(test_idx, dtype=torch.long)
+    # Mirrors upstream GraphGym's cfg.share.dim_in/dim_out (set from the
+    # dataset in torch_geometric/graphgym/loader.py) -- makes the fixed,
+    # per-run household count available to per-node baseline networks
+    # (custom_graphgym/network/baseline_*.py) at __init__ time, before
+    # create_model() runs.
+    cfg.share.num_nodes = dataset.num_nodes
     return dataset

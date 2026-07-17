@@ -11,6 +11,7 @@ from ..head.capsule import CapsuleRegressor
 from ..layer.dict_learn import SparseCodingModule
 from ..loader.graphs import GraphBuilder
 from ..loss.st_caps_loss import STSGCCapsLoss
+from ..target_utils import active_targets
 
 
 @register_network('st_sgc_caps')
@@ -20,6 +21,7 @@ class STSGCCaps(nn.Module):
         config = cfg.st_caps
         self.m = config.m
         self.m_prime = config.m_prime
+        self.targets = active_targets()
 
         # Dual read: batch.x carries [consumption, generation] instead of net
         # demand, same convention as earne_network (cfg.model.dim_in == 2).
@@ -154,6 +156,11 @@ class STSGCCaps(nn.Module):
 
         register.batch = batch
 
-        pred = torch.stack([load_pred, pv_pred], dim=1)   # [N, 2]
+        # load_pred/pv_pred are computed jointly above (shared capsule
+        # routing) and both are always stashed in st_caps_outputs for the
+        # loss, but the reported pred only includes the selected target(s)
+        # -- cfg.model.predict_targets, default PV only.
+        pred_by_target = {"load": load_pred, "pv": pv_pred}
+        pred = torch.stack([pred_by_target[t] for t in self.targets], dim=1)  # [N, len(targets)]
         true = torch.stack([batch.y_load, batch.y_pv, batch.mask, batch.y_net_demand], dim=1)  # [N, 4]
         return pred, true

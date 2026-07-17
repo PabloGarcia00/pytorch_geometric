@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import torch
@@ -5,6 +6,7 @@ import torch
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_metric
 
+from ..target_utils import active_targets
 from ..transform.transform import Transform
 
 _TRANSFORM_CACHE = {}
@@ -29,56 +31,48 @@ def _get_transform() -> Transform:
 def compute_earne_mae(true_list, pred_list):
     """
     true_list: list of tensors [N, 4] (y_load, y_pv, mask, y_net_demand)
-    pred_list: list of tensors [N, 2 * n_quantiles]
+    pred_list: list of tensors [N, n_quantiles * len(targets)], one
+        quantile block per cfg.model.predict_targets entry (default: PV
+        only), in active_targets() order.
+
+    Returns (mae_load, mae_pv); either is NaN if that target isn't in
+    cfg.model.predict_targets (there's no corresponding pred column block
+    to compute it from).
     """
     t = _get_transform()
     median_idx = cfg.model.quantiles.index(0.5)
+    n_q = cfg.model.n_quantiles
+    targets = active_targets()
 
-    total_mae_load = 0.0
-    total_mae_pv = 0.0
-    total_load_nodes = 0
-    total_pv_nodes = 0
+    totals = {name: {"abs": 0.0, "n": 0.0} for name in targets}
+    y_col = {"load": 0, "pv": 1}
 
     for true, pred in zip(true_list, pred_list):
-        y_load = true[:, 0]
-        y_pv = true[:, 1]
         mask = true[:, 2]
+        for i, name in enumerate(targets):
+            y = true[:, y_col[name]]
+            q_median = torch.nan_to_num(pred[:, i * n_q + median_idx], nan=0.0)
+            err = torch.abs(
+                t.inverse_transform(name, q_median) - t.inverse_transform(name, y)
+            )
+            totals[name]["abs"] += (err * mask).sum().item()
+            totals[name]["n"] += mask.sum().item()
 
-        q_load_median = torch.nan_to_num(pred[:, median_idx], nan=0.0)
-        q_pv_median = torch.nan_to_num(
-            pred[:, cfg.model.n_quantiles + median_idx], nan=0.0
-        )
+    def _mae(name):
+        if name not in totals or totals[name]["n"] == 0:
+            return float("nan")
+        return totals[name]["abs"] / totals[name]["n"]
 
-        err_load = torch.abs(
-            t.inverse_transform("load", q_load_median)
-            - t.inverse_transform("load", y_load)
-        )
-        err_pv = torch.abs(
-            t.inverse_transform("pv", q_pv_median)
-            - t.inverse_transform("pv", y_pv)
-        )
-
-        total_mae_load += (err_load * mask).sum().item()
-        total_mae_pv += (err_pv * mask).sum().item()
-        total_load_nodes += mask.sum().item()
-        total_pv_nodes += mask.sum().item()
-
-    if total_load_nodes == 0:
-        return 0.0, 0.0
-
-    return (
-        total_mae_load / total_load_nodes,
-        total_mae_pv / total_pv_nodes if total_pv_nodes > 0 else 0.0,
-    )
+    return _mae("load"), _mae("pv")
 
 
 @register_metric("earne_mae_load")
 def earne_mae_load(true_list, pred_list, task_type):
     mae_load, _ = compute_earne_mae(true_list, pred_list)
-    return float(round(mae_load, 3))
+    return float("nan") if math.isnan(mae_load) else float(round(mae_load, 3))
 
 
 @register_metric("earne_mae_pv")
 def earne_mae_pv(true_list, pred_list, task_type):
     _, mae_pv = compute_earne_mae(true_list, pred_list)
-    return float(round(mae_pv, 3))
+    return float("nan") if math.isnan(mae_pv) else float(round(mae_pv, 3))
