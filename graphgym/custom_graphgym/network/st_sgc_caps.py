@@ -101,22 +101,27 @@ class STSGCCaps(nn.Module):
         device = raw_x.device
         weather = batch.weather if self.weather_mode else None  # [N, T, W]
 
+        # Every timestep's graph only looks backward at its own trailing window,
+        # independent of every other timestep - so all m+1 graphs are built in one
+        # batched call instead of a Python loop issuing m+1 separate correlation
+        # computations. See GraphBuilder.build_graphs_all for the equivalence.
+        all_adj = self.graph_builder.build_graphs_all(
+            graph_signal[:, :self.m + 1],
+            lambda_threshold=self.lambda_threshold,
+        ).to(device)  # [m+1, N, N]
+        zero_adj = torch.zeros(batch_size, batch_size, device=device)
+
+        if second_stream is None:
+            node_feats_all = raw_x[:, :self.m + 1].unsqueeze(-1)  # [N, m+1, 1]
+        else:
+            node_feats_all = torch.stack(
+                [raw_x[:, :self.m + 1], second_stream[:, :self.m + 1]], dim=-1
+            )  # [N, m+1, 2]
+
         graphs = []
         for t in range(self.m + 1):
-            if t == 0:
-                adj = torch.zeros(batch_size, batch_size, device=device)
-            else:
-                adj, _ = self.graph_builder.build_graph(
-                    graph_signal[:, :t + 1],
-                    lambda_threshold=self.lambda_threshold,
-                )
-                adj = adj.to(device)
-
-            if second_stream is None:
-                node_feat = raw_x[:, t].unsqueeze(-1)  # [N, 1]
-            else:
-                node_feat = torch.stack([raw_x[:, t], second_stream[:, t]], dim=-1)  # [N, 2]
-            graphs.append((adj, node_feat))
+            adj = zero_adj if t == 0 else all_adj[t]
+            graphs.append((adj, node_feats_all[:, t]))
 
         latent_features = []
         h_states, c_states = None, None

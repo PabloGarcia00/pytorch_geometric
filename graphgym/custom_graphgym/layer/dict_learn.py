@@ -72,14 +72,20 @@ class SparseCodingModule(nn.Module):
                 self.dict_learner.dictionary.data = new_dict
             return codes
         elif features.dim() == 3:
+            # update_codes' IRLS solve is independent per (t, node) given a fixed
+            # shared dictionary - so all T timesteps can be folded into one
+            # [T*N, M_prime] batch and solved in a single call instead of T
+            # separate Python-level calls each issuing their own batched
+            # torch.linalg.solve (this was the dominant cost in profiling: ~121
+            # batched LU solves per forward pass with the un-batched loop).
             T, N, M_prime = features.shape
-            codes_list = []
-            for t in range(T):
-                codes_t, _ = self.dict_learner(features[t])
-                codes_list.append(codes_t)
-                if update_dict and self.training and t == T - 1:
-                    new_dict = self.dict_learner.update_dictionary(features[t], codes_t.detach())
-                    self.dict_learner.dictionary.data = new_dict
-            return torch.stack(codes_list)
+            flat = features.reshape(T * N, M_prime)
+            codes_flat, _ = self.dict_learner(flat)
+            codes = codes_flat.view(T, N, self.dict_learner.n_atoms)
+            if update_dict and self.training:
+                last_codes = codes[-1].detach()
+                new_dict = self.dict_learner.update_dictionary(features[-1], last_codes)
+                self.dict_learner.dictionary.data = new_dict
+            return codes
         else:
             raise ValueError(f"Expected 2D or 3D tensor, got shape {features.shape}")

@@ -1,10 +1,70 @@
 import torch
+import torch.nn.functional as F
 from typing import Optional, Tuple
 
 
 class GraphBuilder:
     def __init__(self, lambda_threshold: float = 0.25):
         self.lambda_threshold = lambda_threshold
+
+    def build_graphs_all(
+        self,
+        signal: torch.Tensor,
+        window: int = 10,
+        lambda_threshold: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Vectorized equivalent of calling `build_graph(signal[:, :t+1], window,
+        lambda_threshold)` for every end-position t = 0..T-1 in one batched pass,
+        instead of a Python loop issuing T separate correlation computations.
+
+        Each position only ever looks at its own trailing window (<= `window`
+        samples ending at t), so positions are independent and can be computed
+        together via `unfold` + a validity mask (early positions have a shorter,
+        left-padded window; the mask keeps the padding out of the mean/std/corr).
+
+        Returns adjacency of shape [T, N, N]. Index 0 is degenerate (single-sample
+        history, mirrors build_graph's own T<2 guard) - callers should special-case
+        t=0 as a zero matrix, same as the original per-t loop did.
+        """
+        N, T = signal.shape
+        device = signal.device
+        threshold = self.lambda_threshold
+
+        padded = F.pad(signal, (window - 1, 0))            # [N, T + window - 1]
+        windows = padded.unfold(1, window, 1)               # [N, T, window]
+
+        valid_len = torch.clamp(torch.arange(T, device=device) + 1, max=window)  # [T]
+        slot_idx = torch.arange(window, device=device).unsqueeze(0)              # [1, window]
+        valid_mask = (slot_idx >= (window - valid_len.unsqueeze(1))).float()      # [T, window]
+        valid_mask_b = valid_mask.unsqueeze(0)                                    # [1, T, window]
+
+        count = valid_len.clamp(min=1).float()              # [T]
+        denom = (valid_len - 1).clamp(min=1).float()         # [T]
+
+        masked = windows * valid_mask_b
+        mean = masked.sum(dim=-1) / count                    # [N, T]
+        centered = (windows - mean.unsqueeze(-1)) * valid_mask_b  # [N, T, window]
+        var = (centered ** 2).sum(dim=-1) / denom            # [N, T]
+        std = torch.sqrt(var)
+
+        # Same rationale as build_graph: degenerate (near-constant) nodes have
+        # std ~0, so dividing by it would blow up into spurious correlation.
+        degenerate = std < 1e-6
+        std_safe = std.clone()
+        std_safe[degenerate] = 1.0
+        norm_centered = (centered / std_safe.unsqueeze(-1)) * valid_mask_b
+        norm_centered[degenerate] = 0.0
+
+        nc = norm_centered.permute(1, 0, 2)                  # [T, N, window]
+        corr = torch.bmm(nc, nc.transpose(1, 2)) / denom.view(-1, 1, 1)  # [T, N, N]
+        abs_corr = torch.abs(corr)
+
+        if lambda_threshold is not None:
+            mask_thr = torch.sigmoid(100.0 * (abs_corr - lambda_threshold))
+        else:
+            mask_thr = (abs_corr > threshold).float()
+        adjacency = torch.nan_to_num(torch.exp(abs_corr) * mask_thr)
+        return adjacency
 
     def build_graph(
         self,
