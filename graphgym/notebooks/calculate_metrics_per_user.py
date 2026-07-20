@@ -36,7 +36,7 @@ def compute_metrics_per_user(row: pd.Series) -> list[dict] | None:
     result = disaggregate_test_set(row)
     if result is None:
         return None
-    true, pred, user_ids = result
+    true, pred, user_ids, _ = result
     true_np, pred_np = true.numpy(), pred.numpy()
 
     records = []

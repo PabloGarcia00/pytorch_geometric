@@ -138,17 +138,24 @@ def _load_state_dict(ckpt_path: Path, model: torch.nn.Module) -> None:
 
 def disaggregate_test_set(
     row: pd.Series,
-) -> tuple[torch.Tensor, torch.Tensor, list[str]] | None:
+) -> tuple[torch.Tensor, torch.Tensor, list[str], list] | None:
     """
     Load `row`'s config + checkpoint, run inference over its test split, and
     denormalize predictions/labels back into physical units (W).
 
-    Returns (true, pred, user_ids):
+    Returns (true, pred, user_ids, timestamps):
         true: [N, 4, T]  — y_load, y_pv, mask, y_net_demand (always both,
             regardless of what was predicted)
         pred: [N, n_quantiles * len(targets), T] — one quantile block per
             cfg.model.predict_targets entry, in active_targets() order
         user_ids: length-N list, aligned with true/pred's node dimension
+        timestamps: length-T list of the real timestamp each T column
+            corresponds to. The test loader uses shuffle=False (see
+            torch_geometric.graphgym.loader.create_loader), so batches are
+            iterated in ascending test-split order — recomputing
+            get_split_indices() here reproduces that same order without
+            depending on dataset.data.test_graph_index, which create_loader
+            deletes once the loader is built.
     or None if the dataset/checkpoint for this run isn't available on this machine.
     """
     cache_fit = row["model_type"] in CACHE_FIT_MODEL_TYPES
@@ -213,7 +220,10 @@ def disaggregate_test_set(
         ],
         dim=1,
     )
-    return true_denorm, pred_denorm, dataset.active_ids
+    _, _, test_idx = dataset.get_split_indices()
+    timestamps = [dataset.timestamps[i + dataset.seq_len] for i in test_idx]
+
+    return true_denorm, pred_denorm, dataset.active_ids, timestamps
 
 
 def compute_metrics(row: pd.Series) -> dict | None:
@@ -221,7 +231,7 @@ def compute_metrics(row: pd.Series) -> dict | None:
     result = disaggregate_test_set(row)
     if result is None:
         return None
-    true, pred, _ = result
+    true, pred, _, _ = result
     # cfg still reflects `row`'s config -- disaggregate_test_set's load_cfg
     # call mutated the module-level singleton and nothing has touched it
     # since (this call happens immediately after, synchronously).
