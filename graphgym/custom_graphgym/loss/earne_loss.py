@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_loss
 
@@ -53,8 +54,10 @@ def earne_loss_complex(pred, true):
     Custom loss for EARNe:
     1. Quantile loss for each target selected via cfg.model.predict_targets
        (Load and/or PV -- default PV only)
-    2. Physics-informed constraint: Load - PV = NetDemand (only when both
-       targets are being predicted -- it's not well-defined otherwise)
+    2. Physics-informed constraint: predicted PV must be at least the export
+       implied by net demand (you can't export more than you generate) --
+       needs only PV, matching the PV-only default (see PhysicsLoss-era
+       load-pv=net_demand constraint this replaced, which needed both targets)
     3. Crossing penalty, applied per selected target independently
     """
     if cfg.model.loss_fun != "earne_loss":
@@ -83,14 +86,31 @@ def earne_loss_complex(pred, true):
     assert 0.5 in quantiles, "median must be in quantiles!"
     q50_idx = quantiles.index(0.5)
 
-    # Physics loss needs both Load and PV -- skip it cleanly when only one
-    # is being predicted rather than pretending the other is zero.
-    if physics_weight > 0.0 and "load" in q_by_target and "pv" in q_by_target:
-        pred_net_demand = (
-            q_by_target["load"][:, q50_idx] - q_by_target["pv"][:, q50_idx]
+    # Physics loss: predicted PV must be >= the export implied by net demand
+    # (export = max(-net_demand, 0) -- generation net of consumption; you
+    # cannot export more than you generate). Mirrors the eval-time
+    # export_violation metric (regression.py) exactly, so this loss
+    # directly targets what that metric measures. Only needs PV, so it's
+    # well-defined under the PV-only default.
+    #
+    # q_by_target/y_net_demand are each independently normalized (their own
+    # energy_norm_mode), so subtracting them directly isn't physically
+    # meaningful -- inverse-transform both to physical Watts first. The
+    # resulting Watt-scale shortfall is then asinh-compressed (same
+    # log-like compression every other energy quantity in this codebase
+    # uses) before squaring, so physics_weight stays in a comparable range
+    # to the ihs-scale quantile loss rather than being dominated by raw
+    # Watt^2 magnitudes.
+    if physics_weight > 0.0 and "pv" in q_by_target:
+        transform = register.transform
+        pv_pred_watts = transform.inverse_transform(
+            "pv", q_by_target["pv"][:, q50_idx]
         )
-        diff_sq = (pred_net_demand - y_net_demand) ** 2
-        loss_physics = (diff_sq * mask).sum() / (mask.sum() + 1e-9)
+        net_demand_watts = transform.inverse_transform("net_demand", y_net_demand)
+        export_true_watts = torch.clamp(-net_demand_watts, min=0.0)
+        shortfall_watts = torch.clamp(export_true_watts - pv_pred_watts, min=0.0)
+        shortfall_scaled = torch.asinh(shortfall_watts)
+        loss_physics = (shortfall_scaled ** 2 * mask).sum() / (mask.sum() + 1e-9)
         total_loss = total_loss + physics_weight * loss_physics
 
     # Crossing penalty — penalise q[i] > q[i+1], per selected target

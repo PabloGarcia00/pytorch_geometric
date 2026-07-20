@@ -4,7 +4,7 @@ num_workers: 0
 dataset:
   format: earne_loader_new
   name: earne_exp2
-  dir: datasets/earne_dual
+  dir: datasets/earne_dual_csi
   task: graph
   task_type: regression
   transductive: false
@@ -87,9 +87,9 @@ earne_data:
     all_features: znorm
   weather_features:
     - temperature_2m_om_mean
-    - shortwave_radiation_om_mean
+    - clearsky_index_mean
     - cloud_cover_low_om_mean
-  processed_root: datasets/earne_dual
+  processed_root: datasets/earne_dual_csi
   zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
   filter_zips: []
   filter_ids: []

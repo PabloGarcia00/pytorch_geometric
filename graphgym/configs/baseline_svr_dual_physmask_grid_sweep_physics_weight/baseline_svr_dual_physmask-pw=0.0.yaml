@@ -1,0 +1,68 @@
+baseline:
+  svr_gamma: 1.0
+  svr_rff_dim: 256
+  svr_seed: 0
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv
+dataset:
+  dir: datasets/earne_dual_physmask
+  format: earne_loader_new
+  name: earne_exp2
+  shuffle_split: false
+  task: graph
+  task_type: regression
+  transductive: false
+earne_data:
+  dual_read: true
+  energy_norm_mode:
+    consumption: log1p
+    generation: ihs
+    load: log1p
+    net_demand: ihs
+    pv: ihs
+  filter_ids: []
+  filter_zips: []
+  graph_mode: learned_corr
+  k_neighbors: 10
+  mask_physics_impossible: true
+  processed_root: datasets/earne_dual_physmask
+  require_full_span: true
+  weather_mode: false
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+metric_best: loss
+model:
+  dim_in: 2
+  loss_fun: earne_loss
+  n_quantiles: 3
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
+  seq_len: 96
+  type: baseline_svr
+num_workers: 0
+optim:
+  base_lr: 0.001
+  max_epoch: 200
+  optimizer: adam
+  scheduler: warmup_cos
+  weight_decay: 0.001
+out_dir: results/baseline_svr_dual_physmask_grid_sweep_physics_weight
+train:
+  batch_size: 32
+  ckpt_period: 10
+  crossing_weight: 0.0
+  early_stopping:
+    enable: true
+    mode: min
+    monitor: val_loss
+    patience: 10
+  eval_period: 1
+  mode: earne_train
+  physics_weight: 0.0
+  train_split: 0.7
+  val_split: 0.85
+  warmup:
+    enable: true
+    epochs: 10

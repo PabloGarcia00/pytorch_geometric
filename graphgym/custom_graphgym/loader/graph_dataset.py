@@ -9,6 +9,7 @@ import torch
 from custom_graphgym.transform.transform import Transform
 from scipy.spatial import distance_matrix
 
+import torch_geometric.graphgym.register as register
 from torch_geometric.data import Data, Dataset
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_loader
@@ -447,7 +448,10 @@ class EARNeGraphDataset(Dataset):
             .with_columns(pl.col("zipcode").fill_null(0).cast(pl.Int64))
         )
         coords_df = pd.read_csv(cfg.earne_data.zipcode_coords)
-        zip_to_latlon = coords_df.set_index("zipcode")[
+        # zipcode_coordinate.csv's join column is "two_number_zip", not
+        # "zipcode" -- this was fixed once already (239db5243) and got
+        # silently reverted by a later commit that touched this file.
+        zip_to_latlon = coords_df.set_index("two_number_zip")[
             ["latitude", "longitude"]
         ]
         zips = mac_zip["zipcode"].to_pandas()
@@ -610,4 +614,11 @@ def load_earne_dataset(format, name, dataset_dir):
     # (custom_graphgym/network/baseline_*.py) at __init__ time, before
     # create_model() runs.
     cfg.share.num_nodes = dataset.num_nodes
+    # Makes the fitted per-stream Transform available at loss-computation
+    # time (earne_loss.py / cvae_loss.py's physics term needs to compare
+    # pv_pred/net_demand in physical Watts, not their independent
+    # per-target normalized encodings). cfg.share is a strict yacs CfgNode
+    # that rejects non-primitive types, so this uses the same plain-module
+    # stash pattern already established for register.batch.
+    register.transform = dataset.transform_obj
     return dataset

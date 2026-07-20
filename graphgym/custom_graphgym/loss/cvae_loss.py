@@ -68,6 +68,7 @@ def cvae_loss_complex(pred, true):
     y_load = true[:, 0]
     y_pv = true[:, 1]
     mask = true[:, 2]
+    y_net_demand = true[:, 3]
 
     pv_eps = cfg.baseline.cvae_pv_eps
     daytime_threshold = cfg.baseline.cvae_daytime_threshold
@@ -92,5 +93,29 @@ def cvae_loss_complex(pred, true):
             + cfg.baseline.cvae_solar_weight * loss_solar
             + cfg.baseline.cvae_gate_weight * loss_gate
         )
+
+        # Same PV-export physics term as earne_loss.py, added because CVAE
+        # previously had no physics_weight mechanism at all. Needs its own
+        # differentiable PV point-estimate -- the quantile `pred` column is
+        # derived via scipy.stats.beta.ppf on detached numpy arrays
+        # (BaselineCVAENetwork._quantiles), so it can't be reused here.
+        # Marginal E[pv] under the zero-inflated Beta is
+        # P(day) * E[Beta(alpha,beta)] = sigmoid(gate_logit) * alpha/(alpha+beta),
+        # still in pv's own minmax [0,1] space -- inverse-transform (along
+        # with net_demand) to physical Watts before comparing, since pv here
+        # is minmax while net_demand is ihs (not directly comparable
+        # otherwise, unlike the ihs/ihs pairing earne_loss.py relies on).
+        physics_weight = cfg.train.physics_weight
+        if physics_weight > 0.0:
+            transform = register.transform
+            p_day = torch.sigmoid(outs["gate_logit"])
+            pv_mean_norm = p_day * (outs["alpha"] / (outs["alpha"] + outs["beta"]))
+            pv_pred_watts = transform.inverse_transform("pv", pv_mean_norm)
+            net_demand_watts = transform.inverse_transform("net_demand", y_net_demand)
+            export_true_watts = torch.clamp(-net_demand_watts, min=0.0)
+            shortfall_watts = torch.clamp(export_true_watts - pv_pred_watts, min=0.0)
+            shortfall_scaled = torch.asinh(shortfall_watts)
+            loss_physics = (shortfall_scaled ** 2 * mask).sum() / (mask.sum() + 1e-9)
+            total_loss = total_loss + physics_weight * loss_physics
 
     return total_loss, pred

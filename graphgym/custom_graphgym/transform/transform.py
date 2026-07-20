@@ -103,7 +103,8 @@ class Transform:
     def transform(self, stream: str, X: torch.Tensor) -> torch.Tensor:
         """Transform a single stream. Raises if not yet fitted."""
         entry = self._get_fitted(stream)
-        return _NORM[entry["mode"]](X, entry["param1"], entry["param2"])
+        p1, p2 = self._params_on(entry, X.device if torch.is_tensor(X) else "cpu")
+        return _NORM[entry["mode"]](X, p1, p2)
 
     def fit_transform(
         self,
@@ -126,7 +127,18 @@ class Transform:
     def inverse_transform(self, stream: str, Y: torch.Tensor) -> torch.Tensor:
         """Invert normalization for a single stream."""
         entry = self._get_fitted(stream)
-        return _DENORM[entry["mode"]](Y, entry["param1"], entry["param2"])
+        p1, p2 = self._params_on(entry, Y.device if torch.is_tensor(Y) else "cpu")
+        return _DENORM[entry["mode"]](Y, p1, p2)
+
+    @staticmethod
+    def _params_on(entry: dict, device) -> tuple:
+        """Fitted params are CPU tensors (fit during process(), before any
+        GPU move) -- every prior caller only ever used them post-training on
+        CPU tensors, so this never surfaced. Loss-time calls need it on the
+        same device as the tensor being (de)normalized, or the underlying
+        torch op raises a device-mismatch error."""
+        p1, p2 = entry["param1"], entry["param2"]
+        return p1.to(device), p2.to(device)
 
     # ── persistence ───────────────────────────────────────────────────────────
 

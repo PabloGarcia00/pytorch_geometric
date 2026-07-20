@@ -4,7 +4,7 @@ num_workers: 0
 dataset:
   format: earne_loader_new
   name: earne_exp2
-  dir: datasets/earne_cvae_dual_nomask_csi
+  dir: datasets/earne_csi
   task: graph
   task_type: regression
   transductive: false
@@ -17,6 +17,8 @@ train:
   ckpt_period: 10
   train_split: 0.7
   val_split: 0.85
+  physics_weight: 0.0
+  crossing_weight: 0.0
   early_stopping:
     enable: true
     monitor: val_loss
@@ -27,15 +29,35 @@ train:
     epochs: 10
 
 model:
-  type: baseline_cvae
-  loss_fun: cvae_loss
+  predict_targets:
+  - pv
+  type: earne_network
+  node_encoder_name: earne_temporal
+  head_name: earne_quantile
+  loss_fun: earne_loss
   seq_len: 96
-  dim_in: 2
+  dim_in: 1
+  hidden_channels: 64
   n_quantiles: 3
   quantiles:
     - 0.1
     - 0.5
     - 0.9
+
+gnn:
+  layers_pre_mp: 0
+  layers_mp: 3
+  layers_post_mp: 3
+  dim_inner: 64
+  layer_type: gatconv
+  stage_type: stack
+  batchnorm: false
+  act: relu
+  dropout: 0.1
+  att_heads: 4
+  clear_feature: false
+  keep_edge: 1.0
+  l2norm: false
 
 optim:
   optimizer: adam
@@ -45,38 +67,25 @@ optim:
 
 metric_best: loss
 
-baseline:
-  cvae_latent_dim: 32
-  cvae_hidden_dim: 64
-  cvae_decoder_dim: 64
-  cvae_num_layers: 2
-  cvae_dropout: 0.1
-  cvae_solar_weight: 1.0
-  cvae_gate_weight: 1.0
-  cvae_kl_weight: 0.1
-  cvae_daytime_threshold: 0.005
-  cvae_pv_eps: 0.001
-
 earne_data:
-  graph_mode: spatial_knn
-  k_neighbors: 0
-  dual_read: true
+  graph_mode: learned_corr
+  lambda_graph: 0.25
+  k_neighbors: 10
+  dual_read: false
   weather_mode: false
   require_full_span: true
   mask_physics_impossible: false
   energy_norm_mode:
     load: log1p
-    pv: minmax
+    pv: ihs
     net_demand: ihs
-    consumption: log1p
-    generation: ihs
   weather_norm_mode:
     all_features: znorm
   weather_features:
     - temperature_2m_om_mean
     - clearsky_index_mean
     - cloud_cover_low_om_mean
-  processed_root: datasets/earne_cvae_dual_nomask_csi
+  processed_root: datasets/earne_csi
   zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
   filter_zips: []
   filter_ids: []

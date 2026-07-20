@@ -1,0 +1,8 @@
+# Sweep: physics-loss weight (mask always on, see base config)
+# Axes  : 1   Runs: 2
+# Usage : python configs_gen.py --config configs/pyg/<base>.yaml --grid grids/pyg/sweep_physics_weight.txt
+#
+# alias  meaning
+# pw     train.physics_weight  (0.0 = mask-only, 0.3 = mask + PV-export physics loss)
+
+train.physics_weight pw [0.0,0.3]

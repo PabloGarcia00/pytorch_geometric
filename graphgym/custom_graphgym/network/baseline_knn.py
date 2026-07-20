@@ -48,8 +48,12 @@ class BaselineKNNNetwork(nn.Module):
             f"Only 'euclidean' is implemented, got {cfg.baseline.knn_distance!r}"
         )
 
-        quantiles = torch.tensor(cfg.model.quantiles, dtype=torch.float32)
-        self.register_buffer("_quantiles_t", quantiles, persistent=False)
+        # Plain attribute, not register_buffer -- same reasoning as
+        # bank_x/bank_valid/bank_y_* in fit_cache: this must track
+        # knn_cache_device independently of the module's own device, and a
+        # registered buffer would get silently dragged back onto GPU by
+        # Lightning's trainer.fit() -> model.to(accelerator_device).
+        self._quantiles_t = torch.tensor(cfg.model.quantiles, dtype=torch.float32)
 
         self._fitted = False
 
@@ -79,6 +83,7 @@ class BaselineKNNNetwork(nn.Module):
         gradient graph is ever built here.
         """
         device = torch.device(cfg.accelerator)
+        cache_device = torch.device(cfg.baseline.knn_cache_device)
         y_attr = {"load": "y_load", "pv": "y_pv"}
         feats = []
         y_by_target = {t: [] for t in self.targets}
@@ -87,13 +92,17 @@ class BaselineKNNNetwork(nn.Module):
         for batch in train_loader:
             batch = batch.to(device)
             B = batch.num_graphs
-            x = self._features(batch).view(B, self.num_nodes, -1)  # [B, N, F]
+            # Offload each batch to cache_device immediately, not after the
+            # loop -- otherwise every batch's features stay resident on GPU
+            # for the whole training set before the final concat, which is
+            # exactly the OOM knn_cache_device="cpu" is meant to avoid.
+            x = self._features(batch).view(B, self.num_nodes, -1).to(cache_device)  # [B, N, F]
             feats.append(x)
             for t in self.targets:
                 y_by_target[t].append(
-                    getattr(batch, y_attr[t]).view(B, self.num_nodes)
+                    getattr(batch, y_attr[t]).view(B, self.num_nodes).to(cache_device)
                 )
-            valid.append(batch.mask.view(B, self.num_nodes).bool())
+            valid.append(batch.mask.view(B, self.num_nodes).bool().to(cache_device))
 
         # [N, S_train, F] / [N, S_train] -- dense per node, invalid targets
         # (mask == 0) are kept in place and excluded at query time via
@@ -104,16 +113,20 @@ class BaselineKNNNetwork(nn.Module):
         bank_x = torch.cat(feats, dim=0).permute(1, 0, 2).contiguous()
         bank_valid = torch.cat(valid, dim=0).permute(1, 0).contiguous()
 
-        cache_device = torch.device(cfg.baseline.knn_cache_device)
-        self.register_buffer("bank_x", bank_x.to(cache_device), persistent=False)
-        self.register_buffer(
-            "bank_valid", bank_valid.to(cache_device), persistent=False
-        )
+        # Plain attributes, not register_buffer: Lightning's trainer.fit()
+        # calls model.to(accelerator_device) during setup, which recurses
+        # over every registered buffer (persistent=False only exempts
+        # state_dict, not device placement) -- that would silently drag the
+        # whole (potentially large) bank back onto GPU regardless of
+        # knn_cache_device, undoing the point of offloading it. forward()
+        # already treats the bank's device as independent of the module's
+        # (see `query.to(self.bank_x.device)`), so plain attributes are the
+        # correct fit here, not buffers.
+        self.bank_x = bank_x.to(cache_device)
+        self.bank_valid = bank_valid.to(cache_device)
         for t in self.targets:
             bank_y = torch.cat(y_by_target[t], dim=0).permute(1, 0).contiguous()
-            self.register_buffer(
-                f"bank_y_{t}", bank_y.to(cache_device), persistent=False
-            )
+            setattr(self, f"bank_y_{t}", bank_y.to(cache_device))
         self._quantiles_t = self._quantiles_t.to(cache_device)
         self._fitted = True
 

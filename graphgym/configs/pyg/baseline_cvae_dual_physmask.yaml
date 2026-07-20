@@ -4,7 +4,7 @@ num_workers: 0
 dataset:
   format: earne_loader_new
   name: earne_exp2
-  dir: datasets/earne_cvae_dual_nomask_csi
+  dir: datasets/earne_cvae_dual_physmask
   task: graph
   task_type: regression
   transductive: false
@@ -17,6 +17,7 @@ train:
   ckpt_period: 10
   train_split: 0.7
   val_split: 0.85
+  physics_weight: 0.0
   early_stopping:
     enable: true
     monitor: val_loss
@@ -63,20 +64,14 @@ earne_data:
   dual_read: true
   weather_mode: false
   require_full_span: true
-  mask_physics_impossible: false
+  mask_physics_impossible: true
   energy_norm_mode:
     load: log1p
     pv: minmax
     net_demand: ihs
     consumption: log1p
     generation: ihs
-  weather_norm_mode:
-    all_features: znorm
-  weather_features:
-    - temperature_2m_om_mean
-    - clearsky_index_mean
-    - cloud_cover_low_om_mean
-  processed_root: datasets/earne_cvae_dual_nomask_csi
+  processed_root: datasets/earne_cvae_dual_physmask
   zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
   filter_zips: []
   filter_ids: []

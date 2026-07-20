@@ -4,7 +4,7 @@ num_workers: 0
 dataset:
   format: earne_loader_new
   name: earne_exp2
-  dir: datasets/earne_cvae_dual_nomask_csi
+  dir: datasets/earne_cvae_csi
   task: graph
   task_type: regression
   transductive: false
@@ -30,7 +30,7 @@ model:
   type: baseline_cvae
   loss_fun: cvae_loss
   seq_len: 96
-  dim_in: 2
+  dim_in: 1
   n_quantiles: 3
   quantiles:
     - 0.1
@@ -60,7 +60,7 @@ baseline:
 earne_data:
   graph_mode: spatial_knn
   k_neighbors: 0
-  dual_read: true
+  dual_read: false
   weather_mode: false
   require_full_span: true
   mask_physics_impossible: false
@@ -68,15 +68,13 @@ earne_data:
     load: log1p
     pv: minmax
     net_demand: ihs
-    consumption: log1p
-    generation: ihs
   weather_norm_mode:
     all_features: znorm
   weather_features:
     - temperature_2m_om_mean
     - clearsky_index_mean
     - cloud_cover_low_om_mean
-  processed_root: datasets/earne_cvae_dual_nomask_csi
+  processed_root: datasets/earne_cvae_csi
   zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
   filter_zips: []
   filter_ids: []
