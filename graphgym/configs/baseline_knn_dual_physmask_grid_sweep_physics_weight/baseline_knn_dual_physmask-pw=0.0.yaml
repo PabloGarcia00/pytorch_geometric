@@ -1,7 +1,7 @@
 baseline:
-  knn_cache_device: cpu
+  knn_cache_device: cuda
   knn_distance: euclidean
-  knn_feature_mode: window_calendar
+  knn_feature_mode: current_calendar
   knn_k: 20
 custom_metrics:
 - earne_mae_load

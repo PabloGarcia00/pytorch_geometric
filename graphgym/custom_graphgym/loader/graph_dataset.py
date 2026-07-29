@@ -448,10 +448,14 @@ class EARNeGraphDataset(Dataset):
             .with_columns(pl.col("zipcode").fill_null(0).cast(pl.Int64))
         )
         coords_df = pd.read_csv(cfg.earne_data.zipcode_coords)
-        # zipcode_coordinate.csv's join column is "two_number_zip", not
-        # "zipcode" -- this was fixed once already (239db5243) and got
-        # silently reverted by a later commit that touched this file.
-        zip_to_latlon = coords_df.set_index("two_number_zip")[
+        # zipcode_coordinate.csv lives outside this repo (exploratory-data-
+        # analysis/assets/), unversioned by us, and its join column has
+        # silently flip-flopped between "zipcode" and "two_number_zip"
+        # across at least 3 commits here (239db5243, cc5cc7c95, 778193ea0)
+        # without the CSV and code ever being confirmed in sync. Accept
+        # either name instead of re-fixing one side again.
+        zip_col = "two_number_zip" if "two_number_zip" in coords_df.columns else "zipcode"
+        zip_to_latlon = coords_df.set_index(zip_col)[
             ["latitude", "longitude"]
         ]
         zips = mac_zip["zipcode"].to_pandas()

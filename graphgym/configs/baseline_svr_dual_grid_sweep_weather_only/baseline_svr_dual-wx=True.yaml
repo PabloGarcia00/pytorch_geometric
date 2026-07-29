@@ -1,7 +1,8 @@
 baseline:
   svr_gamma: 1.0
-  svr_rff_dim: 256
+  svr_rff_dim: 32
   svr_seed: 0
+  svr_feature_mode: current
 custom_metrics:
 - earne_mae_load
 - earne_mae_pv
@@ -53,7 +54,7 @@ optim:
   max_epoch: 200
   optimizer: adam
   scheduler: warmup_cos
-  weight_decay: 0.001
+  weight_decay: 1.0e-05
 out_dir: results/baseline_svr_dual_grid_sweep_weather_only
 train:
   batch_size: 32
@@ -64,6 +65,7 @@ train:
     mode: min
     monitor: val_loss
     patience: 10
+    min_delta: 0.001
   eval_period: 1
   mode: earne_train
   physics_weight: 0.0

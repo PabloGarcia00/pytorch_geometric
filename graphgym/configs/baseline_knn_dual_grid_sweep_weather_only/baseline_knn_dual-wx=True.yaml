@@ -1,7 +1,7 @@
 baseline:
-  knn_cache_device: cpu
+  knn_cache_device: cuda
   knn_distance: euclidean
-  knn_feature_mode: window_calendar_weather
+  knn_feature_mode: current_calendar_weather
   knn_k: 20
 custom_metrics:
 - earne_mae_load
@@ -33,7 +33,7 @@ earne_data:
   - temperature_2m_om_mean
   - clearsky_index_mean
   - cloud_cover_low_om_mean
-  weather_mode: false
+  weather_mode: true
   weather_norm_mode:
     all_features: znorm
   zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv

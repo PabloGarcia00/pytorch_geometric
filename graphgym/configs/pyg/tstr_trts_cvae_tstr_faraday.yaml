@@ -1,0 +1,83 @@
+out_dir: results
+num_workers: 0
+dataset:
+  format: earne_loader_new
+  name: earne_tstr_trts_cvae_tstr_faraday
+  dir: datasets/tstr_trts_cvae_tstr_faraday
+  task: graph
+  task_type: regression
+  transductive: false
+  shuffle_split: false
+train:
+  mode: earne_train
+  batch_size: 32
+  eval_period: 1
+  ckpt_period: 10
+  train_split: 0.7
+  val_split: 0.85
+  early_stopping:
+    enable: true
+    monitor: val_loss
+    patience: 10
+    mode: min
+  warmup:
+    enable: true
+    epochs: 10
+  wandb:
+    project: earne-tstr-trts
+    run_name: ''
+model:
+  type: baseline_cvae
+  loss_fun: cvae_loss
+  seq_len: 96
+  dim_in: 2
+  n_quantiles: 3
+  quantiles:
+  - 0.1
+  - 0.5
+  - 0.9
+optim:
+  optimizer: adam
+  base_lr: 0.001
+  max_epoch: 200
+  scheduler: warmup_cos
+metric_best: loss
+baseline:
+  cvae_latent_dim: 32
+  cvae_hidden_dim: 64
+  cvae_decoder_dim: 64
+  cvae_num_layers: 2
+  cvae_dropout: 0.1
+  cvae_solar_weight: 1.0
+  cvae_gate_weight: 1.0
+  cvae_kl_weight: 0.1
+  cvae_daytime_threshold: 0.005
+  cvae_pv_eps: 0.001
+earne_data:
+  graph_mode: spatial_knn
+  k_neighbors: 0
+  dual_read: true
+  weather_mode: false
+  require_full_span: false
+  mask_physics_impossible: false
+  energy_norm_mode:
+    load: log1p
+    pv: minmax
+    net_demand: ihs
+    consumption: log1p
+    generation: ihs
+  weather_norm_mode:
+    all_features: znorm
+  weather_features:
+  - temperature_2m_om_mean
+  - clearsky_index_mean
+  - cloud_cover_low_om_mean
+  processed_root: datasets/tstr_trts_cvae_tstr_faraday
+  zipcode_coords: ../../exploratory-data-analysis/assets/zipcode_coordinate.csv
+  filter_zips: []
+  filter_ids: []
+  gold_data: /home/sagemaker-user/pytorch_geometric/tstr_trts_gold/tstr_faraday_gold.parquet
+  start_date: '2024-01-01'
+custom_metrics:
+- earne_mae_load
+- earne_mae_pv

@@ -53,6 +53,7 @@ train:
     mode: min
     monitor: val_loss
     patience: 10
+    min_delta: 0.001
   eval_period: 1
   mode: earne_train
   physics_weight: 0.3
@@ -61,3 +62,5 @@ train:
   warmup:
     enable: true
     epochs: 10
+baseline:
+  linear_feature_mode: current

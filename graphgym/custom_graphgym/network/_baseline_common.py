@@ -68,6 +68,32 @@ def build_features(batch, weather_mode: bool, num_nodes: int) -> torch.Tensor:
     return torch.cat([window, calendar], dim=-1)
 
 
+def current_step_features(batch, weather_mode: bool) -> torch.Tensor:
+    """[N, T, C] -> [N, C], using only the most recent input timestep --
+    the nowcasting counterpart to flatten_window's full-window flatten.
+    PV output is close to instantaneous in current conditions (weather,
+    time of day), so this trades away autoregressive history for a much
+    narrower per-household feature width."""
+    x_in = torch.cat([batch.x, batch.operational], dim=-1)  # [N, T, C_x]
+    if weather_mode:
+        x_in = torch.cat([x_in, batch.weather], dim=-1)
+    return x_in[:, -1, :]
+
+
+def baseline_current_in_features(dim_in: int, weather_mode: bool, n_weather: int) -> int:
+    """Width counterpart to baseline_in_features, without the seq_len
+    multiply -- current_step_features() has no window to flatten."""
+    c = dim_in + 1 + (n_weather if weather_mode else 0)  # +1 = operational flag
+    return c + 6  # +6 = last_step_calendar_features
+
+
+def build_current_features(batch, weather_mode: bool, num_nodes: int) -> torch.Tensor:
+    """[N, F] per-node feature vector: current-step signal + calendar anchor."""
+    current = current_step_features(batch, weather_mode)
+    calendar = last_step_calendar_features(batch, num_nodes)
+    return torch.cat([current, calendar], dim=-1)
+
+
 def stack_true(batch) -> torch.Tensor:
     """[N, 4] target tensor (y_load, y_pv, mask, y_net_demand) -- identical
     contract to earne_network.forward's `true`, consumed unmodified by

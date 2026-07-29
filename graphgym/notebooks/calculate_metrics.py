@@ -1,6 +1,9 @@
 import argparse
 import json
+import multiprocessing
+import os
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -164,6 +167,10 @@ def disaggregate_test_set(
 
     cfg.set_new_allowed(True)
     load_cfg(cfg, argparse.Namespace(cfg_file=str(row["config_path"]), opts=[]))
+    # this script does one no-grad pass over an already-processed dataset;
+    # background loader workers add nothing here and would multiply with this
+    # script's own process-pool parallelism, oversubscribing the host
+    cfg.num_workers = 0
     cfg.accelerator = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(cfg.accelerator)
     targets = active_targets()
@@ -226,71 +233,172 @@ def disaggregate_test_set(
     return true_denorm, pred_denorm, dataset.active_ids, timestamps
 
 
-def compute_metrics(row: pd.Series) -> dict | None:
-    """Disaggregate `row`'s test set and score it (pooled across all users) with DisaggregationMetrics."""
+def compute_metrics(row: pd.Series) -> tuple[dict, list[dict]] | None:
+    """
+    Disaggregate `row`'s test set once and score it two ways from the same
+    (true, pred) tensors: pooled across all households (compact summary,
+    -> metrics_long.csv) and per household (drill-down, -> metrics_per_household.csv).
+    Scoring both from a single disaggregate_test_set() call avoids re-running
+    the expensive part (config/dataset/model load + inference) a second time
+    just to get a per-household breakdown.
+    """
     result = disaggregate_test_set(row)
     if result is None:
         return None
-    true, pred, _, _ = result
+    true, pred, user_ids, _ = result
     # cfg still reflects `row`'s config -- disaggregate_test_set's load_cfg
     # call mutated the module-level singleton and nothing has touched it
     # since (this call happens immediately after, synchronously).
     targets = active_targets()
+    n_q = cfg.model.n_quantiles
     q50_idx = cfg.model.quantiles.index(0.5)
-    return DisaggregationMetrics.all(
-        true.numpy(),
-        pred.numpy(),
-        targets=targets,
-        n_quantiles=cfg.model.n_quantiles,
-        q50_idx=q50_idx,
+
+    pooled = DisaggregationMetrics.all(
+        true.numpy(), pred.numpy(), targets=targets, n_quantiles=n_q, q50_idx=q50_idx,
     )
+
+    household_records = []
+    for i, uid in enumerate(user_ids):
+        household_metrics = DisaggregationMetrics.all(
+            true[i : i + 1].numpy(), pred[i : i + 1].numpy(),
+            targets=targets, n_quantiles=n_q, q50_idx=q50_idx,
+        )
+        for target, target_metrics in household_metrics.items():
+            for metric, value in target_metrics.items():
+                household_records.append(
+                    {
+                        "sweep": row["sweep"],
+                        "run_name": row["run_name"],
+                        "seed": row["seed"],
+                        "user_id": uid,
+                        "target": target,
+                        "metric": metric,
+                        "value": value,
+                    }
+                )
+
+    return pooled, household_records
+
+
+# ── parallel execution ──────────────────────────────────────────────────────
+def _compute_metrics_worker(
+    row: pd.Series,
+) -> tuple[pd.Series, dict | None, list[dict] | None, str | None]:
+    """Picklable ProcessPoolExecutor wrapper: returns (row, pooled, household_records,
+    error) instead of raising, so the parent can preserve the existing
+    FAILED-and-continue behavior."""
+    try:
+        result = compute_metrics(row)
+    except Exception as e:
+        return row, None, None, str(e)
+    if result is None:
+        return row, None, None, None
+    pooled, household_records = result
+    return row, pooled, household_records, None
+
+
+def _init_worker() -> None:
+    """Runs once per spawned worker before any task: forces CPU-only inference
+    (avoids GPU contention/OOM across workers sharing the same GPU(s)) and caps
+    intra-op/BLAS threading so `--workers` processes don't each try to claim
+    every core on the host."""
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    torch.set_num_threads(1)
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+
+def _metrics_to_records(row: pd.Series, metrics: dict, order: int) -> list[dict]:
+    """Expand one row's compute_metrics() output into metrics_long.csv records —
+    shared by both the serial and parallel __main__ branches."""
+    return [
+        {
+            "sweep": row["sweep"],
+            "run_name": row["run_name"],
+            "seed": row["seed"],
+            "target": target,
+            "metric": metric,
+            "value": value,
+            "_order": order,
+        }
+        for target, target_metrics in metrics.items()
+        for metric, value in target_metrics.items()
+    ]
 
 
 # ── metric selection ─────────────────────────────────────────────────────────
 METRIC_ORDER = [
     "rmse",
     "nrmse",
+    "rmse_maxnorm",
     "mae",
+    "nmae",
     "r2",
     "mbe",
+    "nmbe",
     "efe",
     "pinball_q10",
+    "npinball_q10",
     "pinball_q50",
+    "npinball_q50",
     "pinball_q90",
+    "npinball_q90",
     "coverage",
     "sharpness",
+    "nsharpness",
     "net_rmse",
+    "nnet_rmse",
     "export_violation_rate",
     "export_violation_count",
     "export_violation_mag",
+    "nexport_violation_mag",
 ]
 METRIC_LABELS = {
     "rmse": "RMSE",
     "nrmse": "NRMSE",
+    "rmse_maxnorm": "RMSE / max",
     "mae": "MAE",
+    "nmae": "NMAE",
     "mape": "MAPE",
     "r2": "R$^2$",
     "mbe": "MBE",
+    "nmbe": "NMBE",
     "efe": "EFE",
     "pinball_q10": "Pinball Q10",
+    "npinball_q10": "NPinball Q10",
     "pinball_q50": "Pinball Q50",
+    "npinball_q50": "NPinball Q50",
     "pinball_q90": "Pinball Q90",
+    "npinball_q90": "NPinball Q90",
     "coverage": "Coverage",
     "sharpness": "Sharpness",
+    "nsharpness": "NSharpness",
     "net_rmse": "Net RMSE",
+    "nnet_rmse": "Net NRMSE",
     "export_violation_rate": "PV<Export Rate",
     "export_violation_count": "PV<Export Count",
     "export_violation_mag": "PV<Export Mag (W)",
+    "nexport_violation_mag": "PV<Export NMag",
 }
 LOWER_IS_BETTER = {
-    "rmse", "nrmse", "mae", "mape", "mbe", "efe",
-    "net_rmse", "pinball_q10", "pinball_q50", "pinball_q90", "sharpness",
-    "export_violation_rate", "export_violation_count", "export_violation_mag",
+    "rmse", "nrmse", "rmse_maxnorm", "mae", "nmae", "mape",
+    "mbe", "nmbe", "efe",
+    "net_rmse", "nnet_rmse",
+    "pinball_q10", "npinball_q10",
+    "pinball_q50", "npinball_q50",
+    "pinball_q90", "npinball_q90",
+    "sharpness", "nsharpness",
+    "export_violation_rate", "export_violation_count",
+    "export_violation_mag", "nexport_violation_mag",
 }
 HIGHER_IS_BETTER = {"r2", "coverage"}
 
 # metrics to hide from the final table — still computed, just noisy/redundant to show
-DROP_METRICS = ["nrmse", "mbe", "pinball_q10", "pinball_q90"]
+DROP_METRICS = [
+    "rmse_maxnorm", "mbe", "nmbe",
+    "pinball_q10", "npinball_q10",
+    "pinball_q90", "npinball_q90",
+]
 
 
 def prune_metrics(df: pd.DataFrame, drop: list[str] = DROP_METRICS) -> pd.DataFrame:
@@ -299,12 +407,25 @@ def prune_metrics(df: pd.DataFrame, drop: list[str] = DROP_METRICS) -> pd.DataFr
     return df.loc[keep]
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--workers", type=int, default=16,
+        help="Process-pool size for parallel disaggregation (1 = legacy serial "
+             "path, still auto-detects CUDA; >1 forces CPU-only workers to avoid "
+             "GPU contention).",
+    )
+    return parser.parse_args()
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    args = parse_args()
     manifest = discover_manifest()
     print(f"Discovered {len(manifest)} runs across {manifest['sweep'].nunique()} sweeps")
 
     records = []
+    household_records = []
     runnable = manifest[
         manifest["ckpt_path"].notna()
         | manifest["model_type"].isin(CACHE_FIT_MODEL_TYPES)
@@ -313,31 +434,47 @@ if __name__ == "__main__":
     if skipped:
         print(f"Skipping {skipped} runs — no checkpoint")
 
-    for _, row in tqdm.tqdm(runnable.iterrows(), total=len(runnable), desc="disaggregating test sets"):
-        try:
-            metrics = compute_metrics(row)
-        except Exception as e:
-            print(f"FAILED  {row['sweep']}/{row['run_name']}/seed={row['seed']}: {e}")
-            continue
-        if metrics is None:
-            continue
-        for target, target_metrics in metrics.items():
-            for metric, value in target_metrics.items():
-                records.append(
-                    {
-                        "sweep": row["sweep"],
-                        "run_name": row["run_name"],
-                        "seed": row["seed"],
-                        "target": target,
-                        "metric": metric,
-                        "value": value,
-                    }
-                )
+    if args.workers <= 1:
+        for order, (_, row) in enumerate(
+            tqdm.tqdm(runnable.iterrows(), total=len(runnable), desc="disaggregating test sets")
+        ):
+            try:
+                result = compute_metrics(row)
+            except Exception as e:
+                print(f"FAILED  {row['sweep']}/{row['run_name']}/seed={row['seed']}: {e}")
+                continue
+            if result is None:
+                continue
+            pooled, hh_records = result
+            records.extend(_metrics_to_records(row, pooled, order))
+            household_records.extend(hh_records)
+    else:
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=args.workers, mp_context=ctx, initializer=_init_worker
+        ) as executor:
+            future_to_order = {
+                executor.submit(_compute_metrics_worker, row): order
+                for order, (_, row) in enumerate(runnable.iterrows())
+            }
+            for future in tqdm.tqdm(
+                as_completed(future_to_order), total=len(future_to_order),
+                desc="disaggregating test sets",
+            ):
+                row, pooled, hh_records, error = future.result()
+                if error is not None:
+                    print(f"FAILED  {row['sweep']}/{row['run_name']}/seed={row['seed']}: {error}")
+                    continue
+                if pooled is None:
+                    continue
+                records.extend(_metrics_to_records(row, pooled, future_to_order[future]))
+                household_records.extend(hh_records)
 
     df_long = pd.DataFrame(records)
     if df_long.empty:
         print("No runs were disaggregated — nothing to report.")
     else:
+        df_long = df_long.sort_values(["_order", "target", "metric"]).drop(columns="_order")
         df_long.to_csv("notebooks/metrics_long.csv", index=False)
 
         # wide: mean-aggregated across seeds (one column per target/sweep/run_name)
@@ -353,3 +490,14 @@ if __name__ == "__main__":
         pd.set_option("display.width", 200)
         pd.set_option("display.max_columns", None)
         print(df)
+
+    df_household = pd.DataFrame(household_records)
+    if not df_household.empty:
+        df_household = df_household.sort_values(
+            ["sweep", "run_name", "seed", "user_id", "target", "metric"]
+        )
+        df_household.to_csv("notebooks/metrics_per_household.csv", index=False)
+        print(
+            f"[OK] wrote notebooks/metrics_per_household.csv ({len(df_household)} rows, "
+            f"{df_household['run_name'].nunique()} runs, {df_household['user_id'].nunique()} households)"
+        )

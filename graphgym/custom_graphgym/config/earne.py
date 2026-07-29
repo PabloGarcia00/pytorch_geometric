@@ -125,6 +125,15 @@ def set_cfg_earne(cfg):
     cfg.train.early_stopping.patience = 10
     cfg.train.early_stopping.mode = "min"
     cfg.train.early_stopping.save_last = True
+    # Lightning's EarlyStopping defaults min_delta to 0.0 -- ANY improvement,
+    # even sub-noise-level floating-point fluctuation, resets the patience
+    # counter. Harmless for models that descend noisily over many epochs,
+    # but a model that converges quickly (e.g. baseline_linear/svr in
+    # 'current' feature_mode, far fewer parameters to fit) can plateau
+    # almost immediately and then oscillate within this threshold forever,
+    # never actually early-stopping. 0.0 preserves prior behavior exactly;
+    # set per-config where a genuine plateau needs to trigger a stop.
+    cfg.train.early_stopping.min_delta = 0.0
 
     # Warmup
     cfg.train.warmup = CN()

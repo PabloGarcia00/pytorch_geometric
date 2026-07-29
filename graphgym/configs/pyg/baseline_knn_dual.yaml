@@ -56,7 +56,7 @@ baseline:
   # which would make this weather sweep a no-op for KNN otherwise.
   knn_feature_mode: window_calendar_weather
   knn_distance: euclidean
-  knn_cache_device: cpu
+  knn_cache_device: cuda
 
 earne_data:
   graph_mode: learned_corr

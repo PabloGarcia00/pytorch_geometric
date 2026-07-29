@@ -5,6 +5,25 @@ TRUE_LOAD, TRUE_PV, TRUE_MASK, TRUE_NET = 0, 1, 2, 3
 
 QUANTILES = [0.1, 0.5, 0.9]
 
+# Metrics denominated in raw power (W) -- these are the ones that get an
+# n-prefixed (PV99-normalized) sibling, e.g. "rmse" -> "nrmse". Everything
+# else (r2, coverage, rmse_maxnorm, mape, efe, export_violation_rate/count)
+# is already unit-free or already self-normalized, so dividing it by
+# pv_p99 again would be meaningless.
+PV_NORMALIZABLE_METRICS = {
+    "rmse", "mae", "mbe",
+    "pinball_q10", "pinball_q50", "pinball_q90",
+    "sharpness", "net_rmse", "export_violation_mag",
+}
+
+# Below this, PV is treated as "not generating" (night/dawn/dusk) and
+# excluded from the pv_p99 pool. Nighttime true-PV is ~0 for most of every
+# day, so a 99th percentile taken over all masked timesteps lands well
+# short of true peak output -- e.g. at 40% daytime share, the "99th
+# percentile" is really only the ~97.5th percentile of daytime values.
+# Dropping the near-zero night samples first fixes the effective rank.
+PV_DAYTIME_MIN_W = 50.0
+
 
 class DisaggregationMetrics:
     """
@@ -32,7 +51,7 @@ class DisaggregationMetrics:
         return np.sqrt(np.mean((p - t) ** 2))
 
     @classmethod
-    def nrmse(cls, t, p, mask):
+    def rmse_maxnorm(cls, t, p, mask):
         t, p = cls._prep(t, p, mask)
         return np.sqrt(np.mean((p - t) ** 2)) / np.max(t)
 
@@ -82,6 +101,20 @@ class DisaggregationMetrics:
         hi = np.asarray(p_high).ravel()
         m = np.asarray(mask, dtype=bool).ravel()
         return np.mean(hi[m] - lo[m])
+
+    @classmethod
+    def pv_p99(cls, true_pv, mask, daytime_min_w=PV_DAYTIME_MIN_W):
+        """99th percentile of true (masked), daytime-only PV power -- a
+        proxy for a household's PV capacity, used to rescale W-denominated
+        metrics so differences in installed PV capacity across households
+        don't drown out the underlying model-quality signal.
+
+        Restricted to samples above `daytime_min_w`: leaving night/dawn/dusk
+        near-zero readings in the pool pulls the percentile down (see
+        PV_DAYTIME_MIN_W above)."""
+        t, _ = cls._prep(true_pv, true_pv, mask)
+        t = t[t > daytime_min_w]
+        return float(np.quantile(t, 0.99)) if t.size else float("nan")
 
     @classmethod
     def net_demand_rmse(cls, true_net, pred_load_q50, pred_pv_q50, mask):
@@ -139,6 +172,7 @@ class DisaggregationMetrics:
         """
         mask = true[:, cls.TRUE_MASK, :]
         true_idx = {"load": cls.TRUE_LOAD, "pv": cls.TRUE_PV}
+        pv_peak = cls.pv_p99(true[:, cls.TRUE_PV, :], mask)
 
         results = {}
         q50_by_target = {}
@@ -151,7 +185,7 @@ class DisaggregationMetrics:
 
             results[name] = {
                 "rmse": float(cls.rmse(t, q50, mask)),
-                "nrmse": float(cls.nrmse(t, q50, mask)),
+                "rmse_maxnorm": float(cls.rmse_maxnorm(t, q50, mask)),
                 "mae": float(cls.mae(t, q50, mask)),
                 "mape": float(cls.mape(t, q50, mask)),
                 "r2": float(cls.r2(t, q50, mask)),
@@ -164,8 +198,7 @@ class DisaggregationMetrics:
                 "sharpness": float(cls.sharpness(q10, q90, mask)),
             }
 
-        # These two need both load and PV q50 -- only computable when both
-        # were predicted.
+        # net_rmse checks load-pv=net_demand, so it genuinely needs both.
         if "load" in q50_by_target and "pv" in q50_by_target:
             results["load"]["net_rmse"] = float(
                 cls.net_demand_rmse(
@@ -176,6 +209,10 @@ class DisaggregationMetrics:
                 )
             )
 
+        # export_violation only needs PV (compared against true net demand),
+        # not load -- was previously gated on both being present, which
+        # silently dropped it entirely under the PV-only default.
+        if "pv" in q50_by_target:
             export_violation = cls.export_violation(
                 true[:, cls.TRUE_NET, :], q50_by_target["pv"], mask
             )
@@ -184,5 +221,18 @@ class DisaggregationMetrics:
             results["pv"]["export_violation_mag"] = export_violation[
                 "mean_magnitude"
             ]
+
+        # n-prefixed (PV99-normalized) siblings for every W-denominated
+        # metric, scaled by this household's (or, when `true`/`pred` are
+        # pooled, the whole pool's) 99th-percentile true PV -- cancels out
+        # PV capacity so households/runs with different system sizes are
+        # comparable.
+        for target_metrics in results.values():
+            for metric in list(target_metrics.keys()):
+                if metric in PV_NORMALIZABLE_METRICS:
+                    value = target_metrics[metric]
+                    target_metrics[f"n{metric}"] = (
+                        value / pv_peak if pv_peak else float("nan")
+                    )
 
         return results

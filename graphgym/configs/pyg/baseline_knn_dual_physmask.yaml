@@ -52,7 +52,7 @@ baseline:
   knn_k: 20
   knn_feature_mode: window_calendar
   knn_distance: euclidean
-  knn_cache_device: cpu
+  knn_cache_device: cuda
 
 earne_data:
   graph_mode: learned_corr

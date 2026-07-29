@@ -43,6 +43,11 @@ def train(
     model.model.fit_cache(datamodule.train_dataloader())
 
     cfg.optim.max_epoch = 0
+    # Lightning's default num_sanity_val_steps=2 would otherwise run 2 real
+    # validation batches (a full cdist against the bank each) during .fit()
+    # purely as a pre-flight check -- redundant here since .validate() runs
+    # the complete validation split immediately after anyway.
+    trainer_config = {**(trainer_config or {}), "num_sanity_val_steps": 0}
     trainer, wrun = build_trainer_and_wandb(model, logger, trainer_config)
     trainer.fit(model, datamodule=datamodule)
     trainer.validate(model, datamodule=datamodule)

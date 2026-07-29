@@ -96,6 +96,7 @@ def build_trainer_and_wandb(
                 monitor=cfg.train.early_stopping.monitor,
                 patience=cfg.train.early_stopping.patience,
                 mode=cfg.train.early_stopping.mode,
+                min_delta=cfg.train.early_stopping.get("min_delta", 0.0),
                 verbose=True,
             )
         )

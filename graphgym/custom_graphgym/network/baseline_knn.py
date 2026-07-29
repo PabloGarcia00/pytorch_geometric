@@ -5,7 +5,12 @@ from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_network
 
 from ..target_utils import active_targets
-from ._baseline_common import flatten_window, last_step_calendar_features, stack_true
+from ._baseline_common import (
+    current_step_features,
+    flatten_window,
+    last_step_calendar_features,
+    stack_true,
+)
 
 
 @register_network("baseline_knn")
@@ -43,6 +48,9 @@ class BaselineKNNNetwork(nn.Module):
             "window",
             "window_calendar",
             "window_calendar_weather",
+            "current",
+            "current_calendar",
+            "current_calendar_weather",
         ), f"Unknown knn_feature_mode: {self.feature_mode}"
         assert cfg.baseline.knn_distance == "euclidean", (
             f"Only 'euclidean' is implemented, got {cfg.baseline.knn_distance!r}"
@@ -69,12 +77,23 @@ class BaselineKNNNetwork(nn.Module):
         self._unused_optim_placeholder = nn.Parameter(torch.zeros(1))
 
     def _features(self, batch):
-        use_weather = self.weather_mode and self.feature_mode == "window_calendar_weather"
-        window = flatten_window(batch, weather_mode=use_weather)
-        if self.feature_mode == "window":
-            return window
+        """'window*' modes flatten the full history window (the original
+        analog-ensemble design: match on recent trajectory shape). 'current*'
+        modes match on only the most recent timestep's raw signal instead --
+        the nowcasting counterpart, see results_archives/ for the write-up.
+        """
+        if self.feature_mode.startswith("window"):
+            use_weather = self.weather_mode and self.feature_mode == "window_calendar_weather"
+            base = flatten_window(batch, weather_mode=use_weather)
+            if self.feature_mode == "window":
+                return base
+        else:
+            use_weather = self.weather_mode and self.feature_mode == "current_calendar_weather"
+            base = current_step_features(batch, weather_mode=use_weather)
+            if self.feature_mode == "current":
+                return base
         calendar = last_step_calendar_features(batch, self.num_nodes)
-        return torch.cat([window, calendar], dim=-1)
+        return torch.cat([base, calendar], dim=-1)
 
     @torch.no_grad()
     def fit_cache(self, train_loader):

@@ -53,7 +53,7 @@ baseline:
   # batch.weather regardless of weather_mode (see baseline_knn.py._features).
   knn_feature_mode: window_calendar_weather
   knn_distance: euclidean
-  knn_cache_device: cpu
+  knn_cache_device: cuda
 
 earne_data:
   graph_mode: learned_corr

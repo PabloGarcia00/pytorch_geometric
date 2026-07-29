@@ -65,6 +65,17 @@ def earne_loss_complex(pred, true):
 
     quantiles = cfg.model.quantiles
     physics_weight = cfg.train.physics_weight
+    # The per-household "canonical" baselines (Linear/SVR/KNN -- independent
+    # weights per household, no cross-household sharing) have far fewer
+    # parameters than the shared-weight models this loss also serves. At the
+    # full physics_weight, the penalty term dominates the objective and the
+    # optimizer settles on a solution that minimizes physics violation at the
+    # cost of catastrophic PV magnitude error (confirmed: pw=0.3 val loss
+    # descends smoothly while val mae_pv explodes into the thousands).
+    # Scaling it down 10x for these three models keeps the penalty
+    # meaningful without letting it swamp the quantile loss.
+    if cfg.model.type in ("baseline_linear", "baseline_svr", "baseline_knn"):
+        physics_weight = physics_weight * 0.1
     crossing_weight = cfg.train.crossing_weight
     n_q = len(quantiles)
     targets = active_targets()
