@@ -205,8 +205,18 @@ class EARNeGraphDataset(Dataset):
         if mask_data is not None and cfg.earne_data.get("require_full_span", True):
             mask_np = mask_data.numpy()
             T = mask_np.shape[0]
-            # Must be active within the first week (672 steps of 15 min) and last week (672 steps)
-            window = min(672, T // 2)
+            # Must be active within the first week and last week of the
+            # dataset's own step spacing -- derived from the actual
+            # timestamps rather than hardcoding 672 (= 15-min steps/week),
+            # so this stays correct for gold-layer files at other
+            # resolutions (5/30/60-min etc).
+            if timestamps is not None and len(timestamps) > 1:
+                ts = pd.to_datetime(timestamps)
+                step_delta = ts[1] - ts[0]
+                steps_per_week = pd.Timedelta(weeks=1) / step_delta
+            else:
+                steps_per_week = 672
+            window = min(int(steps_per_week), T // 2)
             first_active = np.argmax(mask_np, axis=0)
             last_active = T - 1 - np.argmax(mask_np[::-1], axis=0)
             no_on_offboarding = torch.tensor(

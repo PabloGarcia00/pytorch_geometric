@@ -315,6 +315,138 @@ def select_household(run_results: dict, mode: str) -> str:
     raise ValueError(f"Unknown household selection mode: {mode!r}")
 
 
+def select_household_by_rmse(run_results: dict, mode: str) -> str:
+    """
+    Like select_household, but ranks by pooled masked RMSE
+    (DisaggregationMetrics.rmse) instead of plain MAE — same fairness
+    principle (scored across every compared run, common households only, so
+    no single model's performance determines which household gets shown),
+    just a different, harsher-on-outliers metric. Used for the --mode grid
+    figure, where the prompt specifically asks for a *median*-RMSE household
+    (representative, not a best-case cherry-pick).
+    """
+    common_ids = set(next(iter(run_results.values()))["user_ids"])
+    for res in run_results.values():
+        common_ids &= set(res["user_ids"])
+    if not common_ids:
+        raise ValueError("No household is present across every compared run.")
+
+    scores = {}
+    for uid in common_ids:
+        errs = []
+        for res in run_results.values():
+            i = res["user_ids"].index(uid)
+            m = res["mask"][i]
+            if not m.any():
+                continue
+            errs.append(DisaggregationMetrics.rmse(res["real"][i], res["q50"][i], m))
+        if errs:
+            scores[uid] = float(np.mean(errs))
+
+    if not scores:
+        raise ValueError("No household has any valid (unmasked) test timesteps.")
+
+    ranked = sorted(scores, key=scores.get)
+    if mode == "best":
+        return ranked[0]
+    if mode == "worst":
+        return ranked[-1]
+    if mode == "median":
+        return ranked[len(ranked) // 2]
+    raise ValueError(f"Unknown household selection mode: {mode!r}")
+
+
+# Known-good fallback locations for the raw gold-layer parquet, tried in
+# order when cfg.earne_data.gold_data (read from a run's own saved config)
+# no longer exists -- this project's gold-layer file has moved repeatedly
+# and older sweep configs still point at stale/removed paths (e.g. the
+# pre-multi-resolution-split default, /home/sagemaker-user/pytorch_geometric/
+# fleet_gold_layer.parquet). STEPS_PER_DAY=96 is a fixed 15-min-cadence
+# assumption project-wide, so the 15-min variant is the correct substitute
+# for that legacy unsuffixed name -- the newer "unsuffixed = 5min" naming
+# convention only applies to the multi-resolution set this project added
+# later, not the original single-file era these stale configs date from.
+_GOLD_DATA_FALLBACKS = (
+    "/home/sagemaker-user/exploratory-data-analysis/output/gold_layer/fleet_gold_layer_15min.parquet",
+    "/mnt/custom-file-systems/efs/fs-0e26e28a2c1df7f40/eda-gold-layer/fleet_gold_layer_15min.parquet",
+)
+
+
+def _resolve_gold_data_path(path: str) -> str:
+    if Path(path).exists():
+        return path
+    for fallback in _GOLD_DATA_FALLBACKS:
+        if Path(fallback).exists():
+            print(f"  [note] gold_data path {path!r} no longer exists; using {fallback!r} instead")
+            return fallback
+    raise FileNotFoundError(
+        f"gold_data path {path!r} doesn't exist and none of the known fallback "
+        f"locations do either: {_GOLD_DATA_FALLBACKS!r}"
+    )
+
+
+def select_clearsky_day(
+    timestamps: list, uid: str, days: int, gold_data_path: str
+) -> tuple[int, str, bool]:
+    """
+    Rule: among every local-midnight-aligned `days`-long window inside
+    [timestamps[0], timestamps[-1]], pick the one with the highest mean
+    clearsky_index_mean, restricted to windows where is_clear_sky_day holds
+    at every step -- not just the single highest-CSI instant, and not
+    cherry-picked by eye. Falls back to the highest-mean-CSI window
+    regardless of the flag if literally none qualifies (rare; the caller
+    should surface `fell_back` so the figure's caption states which rule
+    actually fired rather than silently claiming the stricter one).
+
+    Queries the *raw* gold-layer parquet directly (independent of whatever
+    weather_mode the run being plotted used) via cfg.earne_data.gold_data --
+    this project's gold-layer file has moved locations multiple times, so
+    the caller must pass the path actually recorded in the run's own config
+    rather than a hardcoded one.
+
+    Returns (window_start_index, iso_date, used_clearsky_flag).
+    """
+    import polars as pl
+
+    gold_data_path = _resolve_gold_data_path(gold_data_path)
+    df = (
+        pl.scan_parquet(gold_data_path)
+        # user_id in the raw parquet is int64; uid here is the dataset
+        # pipeline's str(user_id) form (graph_dataset.py's master_ids) --
+        # cast rather than assume either side's dtype.
+        .filter(pl.col("user_id").cast(pl.Utf8) == str(uid))
+        .select("timestamp", "clearsky_index_mean", "is_clear_sky_day")
+        .drop_nulls()
+        .collect()
+        .sort("timestamp")
+    )
+    ts_min, ts_max = timestamps[0], timestamps[-1]
+    df = df.filter((pl.col("timestamp") >= ts_min) & (pl.col("timestamp") <= ts_max))
+    if df.is_empty():
+        raise ValueError(f"No CSI data for household {uid!r} within the test window.")
+
+    daily = (
+        df.with_columns(
+            pl.col("timestamp").dt.convert_time_zone("Europe/Amsterdam").dt.date().alias("date")
+        )
+        .group_by("date")
+        .agg(
+            pl.col("clearsky_index_mean").mean().alias("mean_csi"),
+            pl.col("is_clear_sky_day").all().alias("fully_clear"),
+        )
+    )
+
+    clear_days = daily.filter(pl.col("fully_clear")).sort("mean_csi", descending=True)
+    used_clearsky_flag = len(clear_days) > 0
+    chosen = clear_days if used_clearsky_flag else daily.sort("mean_csi", descending=True)
+    if chosen.is_empty():
+        raise ValueError(f"No CSI data available to pick a day for household {uid!r}.")
+
+    date_str = chosen["date"][0].isoformat()
+    start = find_window_by_date(timestamps, date_str, days)
+    return start, date_str, used_clearsky_flag
+
+
 def rank_models_by_mae(manifest: pd.DataFrame, config: str, exclude: set[str] | None = None) -> list[str]:
     """
     Ranks MODEL_CONFIGS labels by test_mae_pv (best seed's, i.e. min across

@@ -45,6 +45,16 @@ def compute_st_caps_errors(true_list, pred_list) -> Dict[str, float]:
     totals = {name: {"abs": 0.0, "sq": 0.0, "n": 0.0} for name in targets}
 
     for true, pred in zip(true_list, pred_list):
+        # GraphGym core (torch_geometric/graphgym/loss.py's compute_loss)
+        # unconditionally does `pred.squeeze(-1) if pred.ndim > 1 else pred`
+        # before any custom loss runs -- harmless for the quantile models
+        # (pred width = n_quantiles * len(targets), never 1), but st_sgc_caps
+        # is a point-estimate model whose pred width is exactly len(targets),
+        # so a single-target (e.g. PV-only) run arrives here already
+        # squeezed to 1D. Restore the expected [N, len(targets)] shape
+        # rather than assuming the framework never does this.
+        if pred.dim() == 1:
+            pred = pred.unsqueeze(-1)
         mask = true[:, 2]
         for i, name in enumerate(targets):
             err = t.inverse_transform(name, pred[:, i]) - t.inverse_transform(

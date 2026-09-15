@@ -24,6 +24,8 @@ Usage:
         --days 2 --out visualization/data
     python visualization/export_profiles.py --mode physics-batch \\
         --days 2 --out visualization/data
+    python visualization/export_profiles.py --mode grid --config dual_wx_off \\
+        --days 1 --out visualization/data/grid_dual_wx_off.json
 """
 
 import argparse
@@ -56,9 +58,13 @@ from trajectory import (
     load_named_run,
     physmask_run,
     rank_models_by_mae,
+    select_clearsky_day,
     select_household,
+    select_household_by_rmse,
     select_household_real_violation,
 )
+
+from torch_geometric.graphgym.config import cfg
 
 PRIMARY_MODEL = "ST-GNN"
 
@@ -183,6 +189,85 @@ def export_models_batch(configs: list[str], days: int, out_dir: str, household: 
             export_models(config, wanted, uid, days, out_path, window_date=date)
 
 
+def export_grid(config: str, days: int, out_path: str) -> None:
+    """
+    Backend for the 2x4 lilaq small-multiples figure (grid_profile.typ):
+    all 7 MODEL_CONFIGS models, one fixed --config, one shared household +
+    day chosen by stated rules (not cherry-picked), best seed by test_loss
+    per model (same convention as every other export in this file).
+
+    Household: median pooled RMSE across all 7 models' common households
+    (select_household_by_rmse) -- deliberately representative, not a
+    best-case showcase.
+    Day: highest-mean clearsky_index_mean among is_clear_sky_day-flagged
+    windows in the test split (select_clearsky_day), queried directly from
+    the raw gold-layer parquet so the choice doesn't depend on whether any
+    given model's own weather_mode happened to be on.
+    Seed: best (lowest test_loss) seed per model -- one real checkpoint's
+    real trajectory, never seed-averaged.
+
+    The three rule descriptions are written into the JSON verbatim (not
+    reconstructed in Typst) so the figure's caption can never drift from
+    what the Python side actually did.
+    """
+    manifest = discover_manifest()
+    wanted = sorted(MODEL_CONFIGS)
+    run_results = _load_models_run_results(manifest, config, wanted)
+    missing = sorted(set(wanted) - set(run_results))
+    if missing:
+        raise SystemExit(f"--mode grid: missing checkpoint(s) for {missing!r} under --config {config!r}.")
+
+    uid = select_household_by_rmse(run_results, "median")
+
+    ref = next(iter(run_results.values()))
+    gold_data_path = cfg.earne_data.gold_data
+    start, date, used_clearsky_flag = select_clearsky_day(ref["timestamps"], uid, days, gold_data_path)
+
+    steps = days * STEPS_PER_DAY
+    end = min(start + steps, len(ref["timestamps"]))
+    timestamps = ref["timestamps"][start:end]
+
+    day_rule = (
+        f"highest mean clearsky_index_mean among is_clear_sky_day-flagged "
+        f"{days}-day window(s) in household {uid}'s test split"
+        if used_clearsky_flag
+        else (
+            f"no fully clear-sky-flagged {days}-day window existed in this household's test "
+            f"split; fell back to the highest mean clearsky_index_mean window regardless of the flag"
+        )
+    )
+    household_rule = (
+        "median pooled RMSE across all 7 models' common test households "
+        "(representative, not a best-case pick)"
+    )
+    seed_rule = "best seed by test_loss per model (single real checkpoint, never seed-averaged)"
+
+    payload = {
+        "config": config,
+        "household": uid,
+        "date": date,
+        "household_rule": household_rule,
+        "day_rule": day_rule,
+        "seed_rule": seed_rule,
+        "timestamps": _iso(timestamps),
+        "true_pv": _series(ref, "real", uid, start, end).tolist(),
+        "true_net": _series(ref, "true_net", uid, start, end).tolist(),
+        "models": {
+            label: {
+                "pv_q50": _series(res, "q50", uid, start, end).tolist(),
+                "pv_qlo": _series(res, "qlo", uid, start, end).tolist(),
+                "pv_qhi": _series(res, "qhi", uid, start, end).tolist(),
+                "seed": res["seed"],
+                "test_loss": res["test_loss"],
+            }
+            for label, res in run_results.items()
+        },
+    }
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(json.dumps(payload))
+    print(f"[OK] wrote {out_path}  (household={uid}, date={date}, models={sorted(run_results)})")
+
+
 def _load_physics_tiers(manifest, model: str) -> dict:
     nomask_sweep, nomask_run_prefix = MODEL_CONFIGS[model]["dual"]
     nomask_run = f"{nomask_run_prefix}-wx=False"
@@ -289,7 +374,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Export best-seed disaggregation profiles to JSON for the Typst renderer."
     )
-    parser.add_argument("--mode", choices=["models", "physics", "models-batch", "physics-batch"], required=True)
+    parser.add_argument("--mode", choices=["models", "physics", "models-batch", "physics-batch", "grid"], required=True)
     parser.add_argument("--model", choices=sorted(MODEL_CONFIGS), default=None, help="--mode physics")
     parser.add_argument(
         "--models", default=None,
@@ -325,6 +410,8 @@ if __name__ == "__main__":
         if args.model is None:
             raise SystemExit("--mode physics needs --model <name>")
         export_physics(args.model, args.household, args.days, args.out)
+    elif args.mode == "grid":
+        export_grid(args.config, args.days, args.out)
     else:  # physics-batch
         models = args.models.split(",") if args.models else sorted(MODEL_CONFIGS)
         export_physics_batch(models, args.days, args.out, rank=args.rank)
