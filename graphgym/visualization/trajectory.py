@@ -356,6 +356,45 @@ def select_household_by_rmse(run_results: dict, mode: str) -> str:
     raise ValueError(f"Unknown household selection mode: {mode!r}")
 
 
+def select_households_by_rmse_window(run_results: dict, n: int = 3) -> list[str]:
+    """
+    Like select_household_by_rmse(mode="median"), but returns the `n`
+    households whose pooled masked RMSE ranks are centered on the median
+    rank instead of just the single median one -- e.g. n=3 gives the
+    median household plus its immediate neighbor above and below in the
+    RMSE ranking. Same fairness principle: ranked across every compared
+    run's pooled RMSE on common households only.
+    """
+    common_ids = set(next(iter(run_results.values()))["user_ids"])
+    for res in run_results.values():
+        common_ids &= set(res["user_ids"])
+    if not common_ids:
+        raise ValueError("No household is present across every compared run.")
+
+    scores = {}
+    for uid in common_ids:
+        errs = []
+        for res in run_results.values():
+            i = res["user_ids"].index(uid)
+            m = res["mask"][i]
+            if not m.any():
+                continue
+            errs.append(DisaggregationMetrics.rmse(res["real"][i], res["q50"][i], m))
+        if errs:
+            scores[uid] = float(np.mean(errs))
+
+    if not scores:
+        raise ValueError("No household has any valid (unmasked) test timesteps.")
+    if len(scores) < n:
+        raise ValueError(f"Only {len(scores)} common households available, need {n}.")
+
+    ranked = sorted(scores, key=scores.get)
+    mid = len(ranked) // 2
+    half = n // 2
+    start = max(0, min(mid - half, len(ranked) - n))
+    return ranked[start:start + n]
+
+
 # Known-good fallback locations for the raw gold-layer parquet, tried in
 # order when cfg.earne_data.gold_data (read from a run's own saved config)
 # no longer exists -- this project's gold-layer file has moved repeatedly

@@ -61,6 +61,7 @@ from trajectory import (
     select_clearsky_day,
     select_household,
     select_household_by_rmse,
+    select_households_by_rmse_window,
     select_household_real_violation,
 )
 
@@ -102,6 +103,26 @@ def _load_models_run_results(manifest, config: str, models: list[str]) -> dict:
     return run_results
 
 
+# dual_wx_off_phys_mask: dual-read, weather off (fixed by the physmask
+# sweep's own base config, not a swept axis there), mask_physics_impossible
+# =True, physics_weight=0.3 -- the "physics constraint on" tier, chosen
+# over pw=0.0 so this condition is substantively different from
+# dual_wx_off (nomask, no physics term at all) rather than only differing
+# in which timesteps get masked out of training.
+_PHYS_MASK_PW = "0.3"
+
+
+def _load_models_run_results_physmask(manifest, models: list[str], pw: str = _PHYS_MASK_PW) -> dict:
+    run_results = {}
+    for label in models:
+        sweep = MODEL_CONFIGS[label]["physmask"]
+        run_name = physmask_run(sweep, pw)
+        res = load_named_run(manifest, sweep, run_name, "pv", best_seed=True)
+        if res is not None:
+            run_results[label] = res
+    return run_results
+
+
 def _write_models_json(config: str, uid: str, run_results: dict, start: int, days: int, out_path: str) -> None:
     ref = next(iter(run_results.values()))
     steps = days * STEPS_PER_DAY
@@ -126,6 +147,68 @@ def _write_models_json(config: str, uid: str, run_results: dict, start: int, day
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(payload))
     print(f"[OK] wrote {out_path}  (household={uid}, models={sorted(run_results)})")
+
+
+def _write_models_json_3user(config: str, uids: list[str], run_results: dict, start: int, days: int, out_path: str) -> None:
+    """Same convention as _write_models_json, but for `select_households_by_rmse_window`'s
+    n=3 households instead of one -- top-level "households" key, each with
+    its own true_pv/models block, sharing one common date/timestamps window."""
+    ref = next(iter(run_results.values()))
+    steps = days * STEPS_PER_DAY
+    end = min(start + steps, len(ref["timestamps"]))
+    timestamps = ref["timestamps"][start:end]
+
+    payload = {
+        "config": config,
+        "households": uids,
+        "household_rule": "3 households centered on the median pooled-RMSE rank "
+                           "across all compared models (representative window, not a cherry-pick)",
+        "date": timestamps[0].date().isoformat(),
+        "timestamps": _iso(timestamps),
+        "data": {
+            uid: {
+                "true_pv": _series(ref, "real", uid, start, end).tolist(),
+                "models": {
+                    label: {
+                        "pv_q50": _series(res, "q50", uid, start, end).tolist(),
+                        "seed": res["seed"],
+                        "test_loss": res["test_loss"],
+                    }
+                    for label, res in run_results.items()
+                },
+            }
+            for uid in uids
+        },
+    }
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(json.dumps(payload))
+    print(f"[OK] wrote {out_path}  (households={uids}, models={sorted(run_results)})")
+
+
+def export_models_3user(config: str, models: list | None, days: int, out_path: str, physmask: bool = False) -> None:
+    """3-household counterpart to export_models/export_models_batch's single
+    auto:median household selection -- see select_households_by_rmse_window.
+    physmask=True loads the dual_physmask/pw=0.3 sweep instead of `config`'s
+    normal (sweep, wx) lookup (used for the "..._phys_mask" condition, which
+    isn't one of CONFIGS' four entries)."""
+    manifest = discover_manifest()
+    wanted = models or sorted(MODEL_CONFIGS)
+    unknown = set(wanted) - set(MODEL_CONFIGS)
+    if unknown:
+        raise SystemExit(f"Unknown model(s): {sorted(unknown)!r}; choices are {sorted(MODEL_CONFIGS)!r}")
+
+    run_results = (
+        _load_models_run_results_physmask(manifest, wanted)
+        if physmask
+        else _load_models_run_results(manifest, config, wanted)
+    )
+    if not run_results:
+        raise SystemExit(f"No requested model has a runnable checkpoint for --config {config!r}.")
+
+    uids = select_households_by_rmse_window(run_results, n=3)
+    ref = next(iter(run_results.values()))
+    start = find_window_start(ref["timestamps"], days)
+    _write_models_json_3user(config, uids, run_results, start, days, out_path)
 
 
 def export_models(
@@ -374,7 +457,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Export best-seed disaggregation profiles to JSON for the Typst renderer."
     )
-    parser.add_argument("--mode", choices=["models", "physics", "models-batch", "physics-batch", "grid"], required=True)
+    parser.add_argument("--mode", choices=["models", "physics", "models-batch", "physics-batch", "grid", "models-3user"], required=True)
     parser.add_argument("--model", choices=sorted(MODEL_CONFIGS), default=None, help="--mode physics")
     parser.add_argument(
         "--models", default=None,
@@ -391,6 +474,10 @@ if __name__ == "__main__":
         help="'auto:best|median|worst' or explicit user_id (models); 'auto:violation[:<rank>]' (physics)",
     )
     parser.add_argument("--rank", type=int, default=1, help="--mode physics-batch: pooled violation rank")
+    parser.add_argument(
+        "--physmask", action="store_true",
+        help="--mode models-3user: use the dual_physmask/pw=0.3 sweep instead of --config's (sweep, wx) lookup",
+    )
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--out", required=True, help="output file (models/physics) or directory (*-batch)")
     args = parser.parse_args()
@@ -412,6 +499,14 @@ if __name__ == "__main__":
         export_physics(args.model, args.household, args.days, args.out)
     elif args.mode == "grid":
         export_grid(args.config, args.days, args.out)
+    elif args.mode == "models-3user":
+        export_models_3user(
+            args.config,
+            args.models.split(",") if args.models else None,
+            args.days,
+            args.out,
+            physmask=args.physmask,
+        )
     else:  # physics-batch
         models = args.models.split(",") if args.models else sorted(MODEL_CONFIGS)
         export_physics_batch(models, args.days, args.out, rank=args.rank)

@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import fnmatch
 import json
 import multiprocessing
@@ -7,6 +8,8 @@ import re
 import resource
 import signal
 import sys
+import tempfile
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -622,6 +625,124 @@ def prune_metrics(df: pd.DataFrame, drop: list[str] = DROP_METRICS) -> pd.DataFr
     return df.loc[keep]
 
 
+@contextlib.contextmanager
+def _locked(path: str, timeout_s: float = 1800):
+    """Advisory exclusive lock on `path.lock` for the read-merge-write
+    critical section in _merge_and_write() -- ACID "isolation" for this
+    file-based store: two concurrent calculate_metrics.py invocations (e.g.
+    a GPU pass for one architecture and a CPU pass for the rest, run at the
+    same time rather than sequentially) must not interleave their
+    read-existing / merge / write-back steps, or one's update can be lost
+    or the file left with an inconsistent mix of both. fcntl.flock is
+    POSIX-only, fine for this project's Linux hosts; blocks (not spins)
+    until the lock is free or `timeout_s` elapses.
+    """
+    import fcntl
+
+    lock_path = f"{path}.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    deadline = time.monotonic() + timeout_s
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"Could not acquire lock on {lock_path} within "
+                        f"{timeout_s}s -- another calculate_metrics.py "
+                        f"process is likely writing metrics_*.csv."
+                    )
+                time.sleep(0.5)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _atomic_write_csv(df: pd.DataFrame, path: str) -> None:
+    """Write `df` to `path` without ever leaving a partial/corrupted file
+    visible if the process dies mid-write -- ACID "atomicity" and
+    "durability" for this file-based store. Writes to a temp file in the
+    SAME directory (so the final os.replace() is a same-filesystem rename,
+    guaranteed atomic on POSIX -- a temp dir on a different filesystem
+    would silently fall back to copy+delete, losing that guarantee), then
+    atomically swaps it into place. Readers either see the old complete
+    file or the new complete file, never a truncated one.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".csv.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            df.to_csv(f, index=False)
+        os.replace(tmp_path, path)  # atomic rename on POSIX
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(tmp_path)
+        raise
+
+
+def _merge_and_write(df_new: pd.DataFrame, path: str, scoped: bool) -> pd.DataFrame:
+    """Write df_new to `path`, returning the full frame now on disk.
+
+    If `scoped` (a --run-name-glob run), merge with whatever's already on
+    disk instead of overwriting it wholesale: rows for (sweep, run_name,
+    seed) tuples this run actually recomputed are replaced; every other row
+    already in the file is left untouched. This is what makes
+    --run-name-glob safe to use for a targeted batch — e.g. scoring one new
+    sweep, or adding seeds 1/2 to a sweep already scored at seed 0 — without
+    wiping the hundreds of other rows a full run already produced.
+
+    An unscoped (full) run keeps the simpler overwrite-everything semantics:
+    an unscoped run's own discovery IS the full ground truth of what's in
+    results/ right now, and naturally drops rows for since-deleted sweeps —
+    a merge would NOT do that, so scoped-merge semantics would be wrong
+    (silently resurrecting stale rows) for the unscoped case.
+
+    The whole read-merge-write sequence runs under _locked() (isolation)
+    and writes via _atomic_write_csv() (atomicity/durability) -- see those
+    functions' docstrings. Also asserts the merged result has no duplicate
+    (sweep, run_name, seed, target, metric) key -- a consistency check that
+    would only ever fail from a bug in this merge logic itself, not from
+    normal use, so it's a hard assert, not a warning.
+    """
+    with _locked(path):
+        if not scoped or not Path(path).exists():
+            merged = df_new
+        else:
+            existing = pd.read_csv(path, low_memory=False)
+            keys = df_new[["sweep", "run_name", "seed"]].drop_duplicates()
+            stays = existing.merge(
+                keys, on=["sweep", "run_name", "seed"], how="left", indicator=True
+            )
+            stays = stays[stays["_merge"] == "left_only"].drop(columns="_merge")
+            merged = pd.concat([stays, df_new], ignore_index=True)
+
+        # user_id included when present: metrics_per_household.csv has one
+        # row per (sweep, run_name, seed, target, metric) *per household* --
+        # without user_id in the key, every one of those legitimately
+        # differs only by user_id and value, which this check would
+        # (and, before this fix, did) misreport as mass duplication.
+        dupe_key_cols = [
+            c for c in ("sweep", "run_name", "seed", "user_id", "target", "metric")
+            if c in merged.columns
+        ]
+        if dupe_key_cols:
+            dupes = merged.duplicated(subset=dupe_key_cols, keep=False)
+            if dupes.any():
+                raise AssertionError(
+                    f"_merge_and_write produced {dupes.sum()} duplicate rows "
+                    f"on key {dupe_key_cols} in {path} -- this indicates a "
+                    f"bug in the merge logic, not a data issue; refusing to "
+                    f"write a corrupted file. Offending keys:\n"
+                    f"{merged.loc[dupes, dupe_key_cols].drop_duplicates()}"
+                )
+
+        _atomic_write_csv(merged, path)
+        return merged
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -724,15 +845,23 @@ if __name__ == "__main__":
                 records.extend(_metrics_to_records(row, pooled, future_to_order[future]))
                 household_records.extend(hh_records)
 
+    scoped = bool(args.run_name_glob)
+
     df_long = pd.DataFrame(records)
     if df_long.empty:
         print("No runs were disaggregated — nothing to report.")
     else:
         df_long = df_long.sort_values(["_order", "target", "metric"]).drop(columns="_order")
-        df_long.to_csv("notebooks/metrics_long.csv", index=False)
+        merged_long = _merge_and_write(df_long, "notebooks/metrics_long.csv", scoped)
+        print(
+            f"[OK] wrote notebooks/metrics_long.csv ({len(merged_long)} rows total, "
+            f"{len(df_long)} from this run{' — merged, not overwritten' if scoped else ''})"
+        )
 
         # wide: mean-aggregated across seeds (one column per target/sweep/run_name)
-        df = df_long.pivot_table(
+        # -- pivoted from the merged frame, not just this run's rows, so a
+        # scoped run's wide.csv still reflects everything else too.
+        df = merged_long.pivot_table(
             index="metric",
             columns=["target", "sweep", "run_name"],
             values="value",
@@ -750,8 +879,12 @@ if __name__ == "__main__":
         df_household = df_household.sort_values(
             ["sweep", "run_name", "seed", "user_id", "target", "metric"]
         )
-        df_household.to_csv("notebooks/metrics_per_household.csv", index=False)
+        merged_household = _merge_and_write(
+            df_household, "notebooks/metrics_per_household.csv", scoped
+        )
         print(
-            f"[OK] wrote notebooks/metrics_per_household.csv ({len(df_household)} rows, "
-            f"{df_household['run_name'].nunique()} runs, {df_household['user_id'].nunique()} households)"
+            f"[OK] wrote notebooks/metrics_per_household.csv ({len(merged_household)} rows, "
+            f"{merged_household['run_name'].nunique()} runs, "
+            f"{merged_household['user_id'].nunique()} households"
+            f"{' — merged, not overwritten' if scoped else ''})"
         )

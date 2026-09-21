@@ -27,7 +27,8 @@ detail.
 ## Actual system (correcting the outline's generic "ST-GNN")
 
 **Models** (all sharing one dataset, one metric suite, one train/eval harness):
-- `earne_network` (the actual GNN — GATConv message passing, `custom_graphgym/network/earne_network.py`)
+- `earne_network` (the actual GNN — GATv2Conv message passing (`pyg_nn.GATv2Conv`, not the original
+  GAT), `custom_graphgym/network/earne_network.py:72`)
 - 5 non-GNN baselines added this session, all per-node (no message passing), registered as
   standalone `@register_network`s: `baseline_mlp` (per-node MLP temporal encoder), `baseline_lstm`
   (BiLSTM), `baseline_cvae` (generative BiLSTM+VAE, Beta-distributed PV head), `baseline_knn`
@@ -178,7 +179,10 @@ architectural/loss-mechanical.
   smaller parameter count otherwise let this term dominate the objective and blow up PV MAE at the
   full weight.
 - **Quantile-crossing penalty**: penalizes `q[i] > q[i+1]` for adjacent quantiles, per selected
-  target, weighted by `cfg.train.crossing_weight` (default 0.05).
+  target, weighted by `cfg.train.crossing_weight` — **not a single default**: LSTM/MLP/CVAE-lineage
+  configs use `0.05`, but GNN (`earne_learned_corr`)/Linear/SVR/KNN configs use `0.0`. Corrected here
+  after the `Evaluated Methods` fact-check below caught the same "one universal default" error
+  repeated in a newer manuscript draft — this note previously had the identical bug.
 - **Optimizer**: Adam, `base_lr = 1e-3`; weight decay via the standard `cfg.optim.weight_decay`
   knob (doubles as SVR's ridge-style regularizer).
 - **Schedule**: linear warmup (`cfg.train.warmup.epochs`, typically 10) into cosine annealing
@@ -195,6 +199,165 @@ architectural/loss-mechanical.
   pass) — goes through the same Lightning `Trainer` / wandb+CSV logging / `stats.json` output, so
   results across all 7 models are directly comparable through one shared metrics pipeline
   (`notebooks/calculate_metrics.py`).
+
+---
+
+## Fact-check: `\section{Evaluated Methods}` LaTeX draft (2026-09-18)
+
+A newer, more polished "Evaluated Methods" draft (shared-framework intro + `Canonical Methods`
+subsection [Linear/SVR/KNN] + `Deep Learning Methods` subsection [MLP/LSTM/CVAE/GNN]) was checked
+line-by-line against the actual code/configs. Most claims held up; four items didn't and are
+recorded here so they don't silently ship into the paper.
+
+**Needs correction:**
+- **Crossing-weight "default 0.05" claim.** The draft states `cfg.train.crossing_weight` defaults
+  to `0.05` for all methods. Actually split: LSTM/MLP/CVAE-lineage configs use `0.05`, but GNN
+  (`earne_learned_corr`)/Linear/SVR/KNN configs use `0.0`. (Same error existed in this file's own
+  "Training setup" section above until this pass — now fixed in place.)
+- **"Dropout uniformly 0.1" claim.** Also directly contradicted this file's own "Open items"
+  section (also fixed in place above): `baseline_mlp` has no dropout at all; Linear/SVR/KNN have no
+  dropout concept. Only GNN/LSTM/CVAE actually use `0.1`.
+- **PV-normalization claim.** The draft implies one normalization scheme (`ihs`, inverse
+  hyperbolic sine) applies uniformly across all 7 models. CVAE is an exception: its dataset build
+  (`datasets/earne_cvae_dual_physmask_5min/`, see `run_5min_dualmask.sh` header) uses `minmax`
+  normalization for PV, not `ihs`, because CVAE's Beta-distributed output head needs inputs/targets
+  bounded in `[0,1]` — `ihs` is unbounded and would break the Beta parameterization. Every other
+  model (KNN/Linear/SVR/LSTM/MLP/GNN) does use `ihs`.
+
+**Needs clarification, not a factual error:**
+- The draft describes MLP/LSTM as "reusing [the GNN's encoder], replacing spatial message-passing
+  with [...]." In the actual code, MLP (`baseline_mlp_network.py`) and LSTM
+  (`baseline_lstm_encoder.py`) each define their own independent encoder from scratch — they don't
+  literally import/subclass/reuse any `earne_network.py` GNN module. The *design lineage* (same
+  temporal-window input contract, same quantile output head, same loss) is real and worth stating,
+  but "reuse...replacing" reads as code-level reuse that isn't there. Suggested rewording: "follow
+  the same temporal-encoder-plus-quantile-head pattern as the GNN, with an independently
+  implemented [BiLSTM / feedforward] encoder in place of spatial message passing."
+
+**Confirmed accurate** (spot-checked, no changes needed): the shared quantile output head and
+pinball loss description, KNN's non-gradient `fit_cache` characterization, SVR's RFF-approximated
+kernel (not exact dual-form) description, the dual-read `dim_in∈{1,2}` framing, and the
+physics-penalty `asinh`-compression description.
+
+---
+
+## Methods-section equations checklist (2026-09-18)
+
+Sorting the loss/architecture math into what belongs in the paper and how, per the standard
+"what needs an equation vs. a citation" triage. All formulas below read directly off
+`custom_graphgym/loss/earne_loss.py` and `custom_graphgym/loss/cvae_loss.py` (re-verified this
+pass, not reused from memory) — not paraphrased from the earlier prose descriptions.
+
+### High-level objective
+
+Given a windowed input `x_{n,t-L+1:t}` for household/node `n` (dual- or single-read, optionally
+weather/spatial context), predict calibrated quantiles of PV generation (and, when selected, load):
+
+$$\hat{y}_{n,t}^{(\tau)} = f_\theta\!\left(x_{n,t-L+1:t}\right)_\tau, \quad \tau \in \mathcal{Q} = \{0.1, 0.5, 0.9\}$$
+
+Shared training objective (GNN/MLP/LSTM/Linear/SVR/KNN, `earne_loss`):
+
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{pinball}} + \lambda_{\text{phys}}\,\mathcal{L}_{\text{phys}} + \lambda_{\text{cross}}\,\mathcal{L}_{\text{cross}}$$
+
+CVAE's own likelihood-based objective (`cvae_loss`, structurally different — not the same function
+with different weights):
+
+$$\mathcal{L}_{\text{total}}^{\text{CVAE}} = \beta_{\text{KL}}\,D_{\mathrm{KL}}\!\big(q(z\mid x)\,\|\,p(z)\big) + \mathrm{NLL}_{\text{load}} + w_{\text{solar}}\,\mathrm{NLL}_{\text{solar}} + w_{\text{gate}}\,\mathrm{BCE}_{\text{gate}} + \lambda_{\text{phys}}\,\mathcal{L}_{\text{phys}}$$
+
+(load/solar/gate terms present only when their target is actually predicted; KL always applies —
+`cvae_loss.py:78-95`.)
+
+### Novel / non-standard — needs its own equation, not just a citation
+
+- **PV-only-compatible physics penalty.** The SEST 2026 paper's physics term needed both
+  `load_pred` and `pv_pred` (`load - pv = net_demand` identity); this session's version needs only
+  PV, since the export implied by net demand can be computed from net demand alone:
+  $$\text{export}_t = \max(-\text{net\_demand}_t,\, 0), \qquad \text{shortfall}_t = \max(\text{export}_t - \hat{pv}_t,\, 0)$$
+  $$\mathcal{L}_{\text{phys}} = \mathbb{E}_t\!\left[\operatorname{asinh}(\text{shortfall}_t)^2\right] \text{ (masked mean, `earne_loss.py:118-124`)}$$
+  This is the paper's own stated generalization — worth its own equation, not folded into "standard
+  physics-informed loss" citations.
+- **Architecture-conditional physics weight** (empirically motivated, not a standard trick):
+  $$\lambda_{\text{phys}}^{\text{eff}} = \begin{cases} 0.1\,\lambda_{\text{phys}} & \text{arch} \in \{\text{Linear, SVR, KNN}\} \\ \lambda_{\text{phys}} & \text{otherwise} \end{cases}$$
+- **Marginal-PV physics term under CVAE's zero-inflated Beta head** — same shortfall penalty,
+  but needs its own point-estimate since the quantile output isn't differentiable (derived via
+  `scipy.stats.beta.ppf` on detached arrays, `cvae_loss.py:97-119`):
+  $$\hat{pv}_t = \sigma(\text{gate\_logit}_t)\cdot\frac{\alpha_t}{\alpha_t+\beta_t} \quad [= \mathbb{E}[\text{PV}_t]\text{ under the zero-inflated Beta}]$$
+- **Quantile-crossing hinge, architecture-dependent weight** — the hinge form itself is standard
+  quantile-regression practice, but this codebase's *non-uniform* weight across architectures is
+  project-specific and was mis-stated as uniform earlier in this file (see the fact-check section
+  above) — worth flagging explicitly so the paper doesn't repeat that error:
+  $$\mathcal{L}_{\text{cross}} = \sum_{\text{target}}\sum_{i=1}^{|\mathcal{Q}|-1} \mathbb{E}_t\!\left[\max\!\big(0,\ \hat{y}_{t,\tau_i} - \hat{y}_{t,\tau_{i+1}}\big)\right], \qquad \lambda_{\text{cross}} \in \{0.05 \text{ (LSTM/MLP/CVAE-lineage)},\ 0.0 \text{ (GNN/Linear/SVR/KNN)}\}$$
+- **Dual-read vs. single-read input formulation** — an ablation axis and paper contribution, not
+  just a preprocessing flag: $x_t \in \mathbb{R}^1$ (single-read, net demand only) vs.
+  $x_t \in \mathbb{R}^2$ (dual-read, `[consumption_t, generation_t]` separately).
+
+### Necessary for reproducibility — exact values/forms a reader would need to reimplement this
+
+- **Masked pinball loss** (`earne_loss.py:23-49` — standard form, but the exact
+  reduction order matters for reproducing reported numbers: mean over quantiles per node *before*
+  the masked mean over nodes, not the reverse):
+  $$\rho_\tau(e) = \max(\tau e,\ (\tau-1)e), \quad e = y - \hat{y}_\tau \qquad
+  \mathcal{L}_{\text{pinball}} = \frac{\sum_n \left[\frac{1}{|\mathcal{Q}|}\sum_\tau \rho_\tau(y_n-\hat{y}_{n,\tau})\right] m_n}{\sum_n m_n + \varepsilon}, \ \varepsilon=10^{-9}$$
+- **KL term** (`cvae_loss.py:33-34`, standard closed-form Gaussian KL but the exact constant/mean
+  convention must match to reproduce β-weighted results): $D_{\mathrm{KL}} = -\tfrac{1}{2}\,\mathrm{mean}\!\left(1+\log\sigma_z^2-\mu_z^2-\exp(\log\sigma_z^2)\right)$
+- Likelihood families for CVAE's heads (determine which loss library call, not just "VAE loss"):
+  load $\to$ masked Gaussian NLL; solar $\to$ masked Beta NLL, daytime-gated
+  (`day\_target = \mathbb{1}[y_{pv} > \text{cvae\_daytime\_threshold}]`); gate $\to$ masked BCE-with-logits.
+- **Full hyperparameter set** (all previously grepped against `configs/pyg/*.yaml` this session,
+  consolidated here): Adam, `lr=1e-3`; `weight_decay=5e-4` (SVR overrides: `1e-3` under `window`
+  mode, `1e-5` under `current` mode); `batch_size=32`; linear warmup (`10` epochs) into cosine
+  annealing; `max_epoch=200`, early stop patience `10` on `val_loss`, `min_delta=0` (`0.001` for
+  the 16 fast-converging Linear/SVR `current`-mode configs); $\mathcal{Q}=\{0.1,0.5,0.9\}$;
+  $\lambda_{\text{phys}} \in \{0.0, 0.3\}$; $\lambda_{\text{cross}}$ split above; dropout `0.1`
+  (GNN/LSTM/CVAE only — MLP/Linear/SVR/KNN have none); `seq_len` scaled per resolution to hold a
+  fixed 24h lookback (288/96/48/24 @ 5/15/30/60-min); 70/15/15 temporal train/val/test split; 3
+  seeds (1 for KNN, deterministic).
+- **Normalization**: `ihs` (inverse hyperbolic sine) for every quantity on 6 of 7 models; CVAE's PV
+  channel alone uses `minmax`$\to[0,1]$ to satisfy the Beta head's support:
+  $$\operatorname{ihs}(x) = \operatorname{asinh}(x/s) = \ln\!\left(x/s + \sqrt{(x/s)^2+1}\right), \qquad \operatorname{minmax}(x) = \frac{x-x_{\min}}{x_{\max}-x_{\min}}$$
+
+### Standard / delegated to references — cite, don't re-derive
+
+- Pinball/quantile loss — Koenker & Bassett (1978).
+- Adam — Kingma & Ba (2015).
+- Linear warmup + cosine-annealing schedule — Loshchilov & Hutter (2017, SGDR); warmup practice
+  generally traced to Goyal et al. (2017).
+- VAE / reparameterization trick, KL regularizer — Kingma & Welling (2014).
+- GATv2 attention — Brody, Alon & Yahav (2022) (confirmed `pyg_nn.GATv2Conv`, not GATv1 — see the
+  correction above in "Actual system").
+- Random Fourier Features approximating an RBF kernel (SVR baseline) — Rahimi & Recht (2007).
+- Bidirectional LSTM — Hochreiter & Schmidhuber (1997); Schuster & Paliwal (1997, BiRNN).
+- Early stopping on validation loss — general practice, cite Prechelt (1998) only if a citation is
+  wanted for a one-line early-stopping claim.
+- Dilated 1-D convolution stacks (GNN/MLP/LSTM's shared temporal encoder, exponentially increasing
+  dilation `1,4,(8,16)` — `custom_graphgym/encoder/temporal_encoder.py:30-93`) — **caveat before
+  citing**: padding is `"same"` (symmetric), not causal, so this is *not* a direct implementation of
+  WaveNet's causal dilated convs (van den Oord et al. 2016) or a strict TCN (Bai et al. 2018) — cite
+  those as prior art for the dilated-conv idea, but note the non-causal deviation explicitly rather
+  than implying full architectural equivalence.
+
+### Practical constraints — prose, with an equation only where it sharpens the point
+
+- **Resolution ceiling is data-imposed, not a design choice**: PV/inverter telemetry is natively
+  5-minute; consumption is natively 1-minute. The 5-min training resolution is the *coarser* of the
+  two, set by the target's own ceiling — this is why the separate cadence-mismatch robustness study
+  (`~/.claude/plans/squishy-wobbling-bunny.md`) exists as a distinct experiment rather than just
+  training at 1-min.
+- **KNN's GPU-resident neighbor bank scales with population size**
+  ($O(N_{\text{households}} \times S_{\text{train}} \times F)$ for the `torch.cdist` call) and OOM'd
+  under sub-optimal-coverage's larger population and at 5-min resolution's wider window — mitigated
+  via the existing `knn_cache_device: cpu` fallback, not an architecture change.
+- **CVAE's CPU-bound bidirectional LSTM encoder** is ~15s/batch on CPU vs. ~0.09–0.28s/batch on GPU
+  at `seq_len=288` (profiled this session, 99% of forward-pass time in the LSTM call) — a
+  50-150$\times$ slowdown specific to this one architecture, not the other six, and the direct cause
+  of needing a separate `--workers 1`/GPU-only scoring path for CVAE in this campaign's own tooling.
+- **Physics-weight instability at low parameter count** motivated the $\times 0.1$ scaling above —
+  stated here as a constraint (why the scaling exists) rather than repeated as a novel-equation
+  item.
+- **Household turnover changes population size, not just labels**: `require_full_span=True` vs.
+  `False` yields 62 vs. 112 households on the reference 15-min dataset — any reported per-household
+  or aggregate metric must state which condition it was computed under, since they're not the same
+  population.
 
 ---
 
@@ -318,9 +481,14 @@ back any reported result):
 - **Batch size**: uniformly `32` across all 171 real-campaign configs. (The only other values —
   `128`/`16`/`1` — belong exclusively to GraphGym's `example_*.yaml` files, one legacy smoke config,
   and `st_sgc_caps` respectively, none of which are part of the 7-model campaign.)
-- **Dropout**: uniformly `0.1` — `gnn.dropout` (82 occurrences), `baseline.lstm_dropout` (23),
-  `baseline.cvae_dropout` (19). The only `0.0` occurrences are in GraphGym's own `example_link.yaml`/
-  `example_graph.yaml`, unrelated to this project.
+- **Dropout**: **not uniform — corrected after the `Evaluated Methods` fact-check below.** `0.1` on
+  GNN (`gnn.dropout`, 82 occurrences), LSTM (`baseline.lstm_dropout`, 23), CVAE
+  (`baseline.cvae_dropout`, 19) — but **`baseline_mlp` has no dropout knob at all**
+  (`custom_graphgym/network/baseline_mlp_network.py` defines no `nn.Dropout` layer and reads no
+  `baseline.mlp_dropout`-style config key), and Linear/SVR/KNN are non-deep-learning-style heads
+  with no dropout concept either. The earlier "uniformly 0.1" phrasing here was wrong — it
+  generalized from the 3 models that happen to share the same knob name/value without checking the
+  other 4.
 - **Max epoch cap**: uniformly `200` (176 of 183 total occurrences); the handful of `100`/`150`/`5`
   values all belong to the same excluded legacy/example/smoke configs above. Early stopping
   (patience 10 on `val_loss`) generally halts training well before this cap in practice.

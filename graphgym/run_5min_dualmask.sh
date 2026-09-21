@@ -16,19 +16,34 @@
 #   datasets/earne_dual_physmask_5min/        (shared: KNN/Linear/SVR/LSTM/MLP/GNN)
 #
 # KNN is deterministic (non-gradient lookup, see custom_graphgym/train/
-# knn_train.py) -- 1 seed only. Every other architecture: 3 seeds.
+# knn_train.py) -- 1 seed only regardless of the plan below.
+#
+# REVISED PLAN (single-seed timing pass first): running all 3 seeds for
+# every gradient-trained architecture up front turned out to be premature --
+# CVAE alone took ~57h projected for 3 seeds, with 6 more architectures
+# unmeasured. So: run every architecture ONCE first (repeat=1) to get a real
+# per-architecture epoch-count + wall-clock-per-epoch data point for all 7,
+# then decide whether seeds 2-3 are worth the added time per architecture.
+#
+# CVAE's single seed is DONE already -- results/res_eval_cvae_5min_dualmask/0/
+# (37 epochs, ~31 min/epoch measured wall-clock, ~19h total) -- not rerun
+# below. To extend any architecture to more seeds later, don't just rerun
+# with --repeat 3: cfg.seed resets to the config's base value each process
+# invocation (main.py:48, `cfg.seed = cfg.seed + 1` inside the --repeat
+# loop), so a fresh `--repeat 3` call would redo seed 0 from scratch before
+# reaching 1/2. Bump the config's base seed (or just accept redoing seed 0,
+# cheap relative to the new seeds) if/when that's wanted.
 #
 # Usage:
 #   bash run_5min_dualmask.sh
 
 set -euo pipefail
 
-python main.py --cfg configs/pyg/res_eval_cvae_5min_dualmask.yaml   --repeat 3
-python main.py --cfg configs/pyg/res_eval_lstm_5min_dualmask.yaml   --repeat 3
-python main.py --cfg configs/pyg/res_eval_mlp_5min_dualmask.yaml    --repeat 3
-python main.py --cfg configs/pyg/res_eval_gnn_5min_dualmask.yaml    --repeat 3
-python main.py --cfg configs/pyg/res_eval_linear_5min_dualmask.yaml --repeat 3
-python main.py --cfg configs/pyg/res_eval_svr_5min_dualmask.yaml    --repeat 3
+python main.py --cfg configs/pyg/res_eval_lstm_5min_dualmask.yaml   --repeat 1
+python main.py --cfg configs/pyg/res_eval_mlp_5min_dualmask.yaml    --repeat 1
+python main.py --cfg configs/pyg/res_eval_gnn_5min_dualmask.yaml    --repeat 1
+python main.py --cfg configs/pyg/res_eval_linear_5min_dualmask.yaml --repeat 1
+python main.py --cfg configs/pyg/res_eval_svr_5min_dualmask.yaml    --repeat 1
 python main.py --cfg configs/pyg/res_eval_knn_5min_dualmask.yaml    --repeat 1
 
 cat <<'EOF'
