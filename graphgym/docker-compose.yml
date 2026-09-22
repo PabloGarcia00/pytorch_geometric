@@ -2,9 +2,9 @@ services:
   pv-disaggregation:
     build: .
     image: pv-disaggregation:latest
-    ports:
-      - "8501:8501"
     restart: unless-stopped
+    # No "ports:" here -- only reachable via the caddy proxy below, so
+    # basic auth can't be bypassed by hitting this container's port directly.
     volumes:
       # Persist the SQLite read-through cache across container restarts --
       # avoids re-fetching already-covered date ranges from the live API.
@@ -14,3 +14,19 @@ services:
       # fetch_datahub.load_api_key() already reads it: a file, not an
       # env var, so no code change needed.
       - ./deploy/.env:/app/deploy/.env:ro
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "8501:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - pv-disaggregation
+
+volumes:
+  caddy_data:
+  caddy_config:

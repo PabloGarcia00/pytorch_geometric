@@ -1,0 +1,6 @@
+:8080 {
+	basic_auth {
+		team $2a$14$nFRmOpoBhDxx./I4VBtUye2O5gRYOVE5kNlr5QL4S1zmUQ0yJMoMS
+	}
+	reverse_proxy pv-disaggregation:8501
+}
