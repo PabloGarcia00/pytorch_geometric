@@ -1,0 +1,15 @@
+[server]
+# Disabling the watchdog file-watcher thread -- it runs concurrently with
+# PyTorch's native (OpenMP/MKL) thread pool during model load/inference and
+# is a well-documented source of rare segfaults in exactly this combination
+# (works fine standalone or under AppTest's single-threaded script runner,
+# crashes intermittently under a live `streamlit run` server). Costs
+# auto-reload-on-save; re-run `streamlit run app.py` manually after edits.
+fileWatcherType = "none"
+
+[theme]
+base = "dark"
+primaryColor = "#3a3a38"
+backgroundColor = "#0b0b0b"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"

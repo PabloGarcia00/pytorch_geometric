@@ -1,0 +1,23 @@
+# NOTE: a blanket exclude here also hides nested paths from explicit COPY
+# sources in the Dockerfile -- .dockerignore prunes the build context
+# before COPY ever runs, it doesn't just hide unreferenced files. So
+# results/ and datasets/ (multi-GB, only ~2MB of which is actually needed)
+# are deliberately NOT excluded here -- the Dockerfile's COPY commands
+# already narrow to the one checkpoint + one transform file, keeping the
+# final image lean regardless of build-context size.
+.venv/
+wandb/
+notebooks/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Secrets and runtime state -- supplied via docker-compose volume mounts
+# at container start, never baked into an image layer.
+deploy/.env
+deploy/data/
+
+deploy/.streamlit/secrets.toml

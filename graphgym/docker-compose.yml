@@ -1,0 +1,16 @@
+services:
+  pv-disaggregation:
+    build: .
+    image: pv-disaggregation:latest
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    volumes:
+      # Persist the SQLite read-through cache across container restarts --
+      # avoids re-fetching already-covered date ranges from the live API.
+      - ./deploy/data:/app/deploy/data
+      # Secret, supplied at runtime -- never baked into the image (see
+      # Dockerfile / .dockerignore). Matches how
+      # fetch_datahub.load_api_key() already reads it: a file, not an
+      # env var, so no code change needed.
+      - ./deploy/.env:/app/deploy/.env:ro
