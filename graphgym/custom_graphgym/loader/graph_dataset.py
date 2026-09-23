@@ -136,9 +136,24 @@ class EARNeGraphDataset(Dataset):
         self.net_scaled = master["net_scaled"][:, self.node_indices]
 
         # ── Transform (for inverse transforms at inference) ───────────────
-        self.transform_obj = Transform.load(
-            Path(root) / self._transform_filename
+        # Prefer a copy co-located with the results run dir (cfg.out_dir,
+        # set by set_out_dir() during training and by
+        # calculate_metrics.disaggregate_test_set() during inference) over
+        # the one cached under `root` (a datasets/ processed-cache
+        # directory that's gitignored, machine-local, and can silently get
+        # rebuilt from a newer raw-data snapshot later -- at which point a
+        # same-named transform file there would no longer match an older
+        # checkpoint's learned normalized space). The results-dir copy is
+        # written once, alongside the checkpoint, and never touched again,
+        # so it stays the exact transform that checkpoint was trained
+        # against even if the datasets/ cache is later rebuilt or deleted.
+        results_dir_transform = Path(cfg.out_dir) / self._transform_filename
+        transform_path = (
+            results_dir_transform
+            if results_dir_transform.exists()
+            else Path(root) / self._transform_filename
         )
+        self.transform_obj = Transform.load(transform_path)
 
         self.pos = master_pos[self.node_indices]
         self.active_ids = [master_ids[i] for i in self.node_indices]

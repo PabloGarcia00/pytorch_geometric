@@ -74,6 +74,10 @@ CACHE_FIT_MODEL_TYPES = {"baseline_knn"}  # matches calculate_metrics.py — no 
 def load_model_and_dataset(cfg_path: str, ckpt_path: str | None):
     cfg.set_new_allowed(True)
     load_cfg(cfg, argparse.Namespace(cfg_file=cfg_path, opts=[]))
+    # Lets EARNeGraphDataset's results-dir-first transform lookup find a
+    # results/<run>/transform_*.pt copy before falling back to datasets/ --
+    # see graph_dataset.py and main.py's _copy_transform_to_results().
+    cfg.out_dir = str(Path(cfg_path).parent)
     cfg.num_workers = 0
     cfg.accelerator = "cuda" if torch.cuda.is_available() else "cpu"
     cfg.baseline.knn_cache_device = cfg.accelerator

@@ -304,6 +304,12 @@ def disaggregate_test_set(
 
     cfg.set_new_allowed(True)
     load_cfg(cfg, argparse.Namespace(cfg_file=str(row["config_path"]), opts=[]))
+    # Lets EARNeGraphDataset's results-dir-first transform lookup (see
+    # graph_dataset.py) find a results/<run>/transform_*.pt copy before
+    # falling back to the datasets/ processed cache -- matches what
+    # set_out_dir() sets during training, so inference and training resolve
+    # the same transform file the same way.
+    cfg.out_dir = str(Path(row["config_path"]).parent)
     # this script does one no-grad pass over an already-processed dataset;
     # background loader workers add nothing here and would multiply with this
     # script's own process-pool parallelism, oversubscribing the host

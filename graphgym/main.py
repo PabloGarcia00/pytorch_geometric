@@ -1,5 +1,7 @@
 import logging
 import os
+import shutil
+from pathlib import Path
 
 import custom_graphgym  # noqa, register custom modules
 import torch
@@ -31,6 +33,26 @@ torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision("high")
 torch.backends.cudnn.allow_tf32 = True  # enables TF32 for Conv1d/Conv2d
 
+
+def _copy_transform_to_results() -> None:
+    """Copy the fitted normalization file (transform_{dual,single}.pt) from
+    the processed dataset cache (cfg.earne_data.processed_root -- a
+    gitignored, machine-local datasets/ directory that can be rebuilt later
+    from a newer raw-data snapshot) into the results run dir (cfg.out_dir),
+    alongside the checkpoint it belongs to. Without this, a checkpoint is
+    unusable for physical-unit inference on any machine/export that doesn't
+    also carry the exact datasets/ cache it was trained against -- see
+    custom_graphgym/loader/graph_dataset.py's matching results-dir-first
+    lookup. Cheap (~4KB) and idempotent; safe to call every seed."""
+    fname = "transform_dual.pt" if cfg.model.dim_in == 2 else "transform_single.pt"
+    src = Path(cfg.earne_data.processed_root) / fname
+    if not src.exists():
+        return
+    dst = Path(cfg.out_dir) / fname
+    if not dst.exists():
+        shutil.copy2(src, dst)
+
+
 if __name__ == "__main__":
     # Load cmd line args
     args = parse_args()
@@ -50,6 +72,7 @@ if __name__ == "__main__":
         auto_select_device()
         # Set machine learning pipeline
         datamodule = GraphGymDataModule()
+        _copy_transform_to_results()
 
         model = create_model()
         # Print model info
