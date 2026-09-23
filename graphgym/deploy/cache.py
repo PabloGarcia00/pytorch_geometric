@@ -49,6 +49,14 @@ def _connect() -> sqlite3.Connection:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS devices (raw_json TEXT NOT NULL, fetched_at TEXT NOT NULL)"
     )
+    # Long format (one row per prediction column) so the table doesn't
+    # depend on the checkpoint's quantile set -- model_tag scopes that.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS predictions ("
+        "p1_id TEXT NOT NULL, model_tag TEXT NOT NULL, ts TEXT NOT NULL, "
+        "col TEXT NOT NULL, value REAL, "
+        "PRIMARY KEY (p1_id, model_tag, ts, col))"
+    )
     return conn
 
 
@@ -184,3 +192,37 @@ def fetch_cached(
         if missing:
             conn.commit()
         return _read_range(conn, stream, p1_id, start, end)
+
+
+def read_predictions(p1_id: str, model_tag: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    """Cached per-target predictions in [start, end], wide (timestamp + one
+    column per prediction column) -- see disaggregate_pv.run_disaggregation
+    for why a target's prediction is stable enough to cache."""
+    with closing(_connect()) as conn:
+        df = pd.read_sql_query(
+            "SELECT ts, col, value FROM predictions WHERE p1_id=? AND model_tag=? AND ts>=? AND ts<=?",
+            conn, params=(p1_id, model_tag, start.isoformat(), end.isoformat()),
+        )
+    if df.empty:
+        return pd.DataFrame({"timestamp": pd.Series(dtype="datetime64[ns, UTC]")})
+    wide = df.pivot(index="ts", columns="col", values="value").rename_axis(columns=None).reset_index()
+    # Same ISO-text round-trip normalization as _read_range.
+    wide["ts"] = pd.to_datetime(wide["ts"], utc=True, format="ISO8601").astype("datetime64[ns, UTC]")
+    return wide.rename(columns={"ts": "timestamp"})
+
+
+def write_predictions(p1_id: str, model_tag: str, pred_df: pd.DataFrame) -> None:
+    cols = [c for c in pred_df.columns if c != "timestamp"]
+    rows = [
+        (p1_id, model_tag, ts.isoformat(), c, float(v))
+        for ts, *vals in pred_df[["timestamp", *cols]].itertuples(index=False)
+        for c, v in zip(cols, vals)
+    ]
+    if not rows:
+        return
+    with closing(_connect()) as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO predictions (p1_id, model_tag, ts, col, value) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()

@@ -169,7 +169,7 @@ def render_results(merged: pd.DataFrame, site_label: str, key_prefix: str) -> No
 
 
 @st.fragment(run_every="60s")
-def live_panel(p1_id: str, sleep: float) -> None:
+def live_panel(p1_id: str, sleep: float, mc_samples: int) -> None:
     """Reruns itself every 60s (matching the SM stream's own 1-min native
     cadence -- polling faster wouldn't surface new real data) via
     st.fragment, independent of the rest of the page. Always a rolling 24h
@@ -182,7 +182,7 @@ def live_panel(p1_id: str, sleep: float) -> None:
         client = get_client()
         site = dpv.get_site(client, p1_id)
         model, device, transform = get_model()
-        merged = dpv.run_disaggregation(client, model, device, transform, site, eval_start, eval_end, sleep)
+        merged = dpv.run_disaggregation(client, model, device, transform, site, eval_start, eval_end, sleep, mc_samples)
     except ValueError as e:
         st.error(str(e))
         return
@@ -216,13 +216,21 @@ with st.sidebar:
     selected_day = st.date_input("Day (UTC)", value=today, max_value=today, disabled=live)
 
     sleep = st.slider("Seconds between API requests", 0.0, 2.0, 0.5, 0.1)
+
+    mc_on = st.toggle("Monte Carlo uncertainty", value=False)
+    # Measured cost: the BiLSTM encode (the expensive part) runs once
+    # regardless of sample count -- only the small decode heads + sampling
+    # scale with it, so 200 samples cost about the same as the default
+    # analytic path. See disaggregate_pv.run_disaggregation's mc_samples doc.
+    mc_samples = st.number_input("Samples", min_value=2, max_value=2000, value=200, step=50, disabled=not mc_on) if mc_on else 0
+
     run = st.button("Run", type="primary", use_container_width=True, disabled=live)
     live = st.toggle("Live (refresh every 60s)", value=live, key="live")
     if live:
         st.caption("Live ignores the date picker -- always the rolling last 24h ending now.")
 
 if live:
-    live_panel(p1_id, sleep)
+    live_panel(p1_id, sleep, mc_samples)
 else:
     if run:
         # Always exactly a 24h window (.as_unit("ns") pins a fixed resolution --
@@ -242,7 +250,7 @@ else:
                 client = get_client()
                 site = dpv.get_site(client, p1_id)
                 model, device, transform = get_model()
-                merged = dpv.run_disaggregation(client, model, device, transform, site, eval_start, eval_end, sleep)
+                merged = dpv.run_disaggregation(client, model, device, transform, site, eval_start, eval_end, sleep, mc_samples)
             except ValueError as e:
                 st.error(str(e))
                 st.stop()

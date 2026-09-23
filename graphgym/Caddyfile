@@ -1,6 +1,16 @@
 :8080 {
 	basic_auth {
-		team $2a$14$xCIu.ULmVkb7QVJQiQqdv.lRqlgmaDYSVy82YXj.3TyRTXlDgySN6
+		team $2a$14$ve/gXooukB3DVKU64Efl6OXxLhqy7mvpl4ATM7ZBLzYrknYDnITyK
 	}
 	reverse_proxy pv-disaggregation:8501
+
+	# Access log -- who's using the app. Lives in the caddy_data volume, so
+	# it survives restarts. Summarize with deploy/visitors.py.
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
 }

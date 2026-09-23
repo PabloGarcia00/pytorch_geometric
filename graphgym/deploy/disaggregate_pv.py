@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -34,7 +35,13 @@ import torch
 # Streamlit's file-watcher thread) -- never reproduced standalone or under
 # AppTest's single-threaded script runner. The model is tiny; single-
 # threaded execution costs no meaningful latency.
-torch.set_num_threads(1)
+# Read from OMP_NUM_THREADS (default 1) so one knob sizes both pools --
+# docker-compose.yml raises it to match the container's CPU cap. Measured
+# on the i7-8550U host: 1 thread 55s, 4 threads 20s for a full 1440-target
+# batch (the BiLSTM is ~99% of it). The segfault above hasn't been seen
+# at >1 thread yet, but it was never tested there either -- drop back to
+# 1 if it reappears.
+torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "1")))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -64,6 +71,17 @@ CKPT_PATH = (
 TRANSFORM_PATH = (
     GRAPHGYM_ROOT / "datasets" / "earne_cvae_dual_physmask_5min" / "transform_dual.pt"
 )
+
+def _pred_cache_tag(mc_samples: int) -> str:
+    """Keys cache.read_predictions/write_predictions. Bump the "steady-v1"
+    suffix on any change to window construction or model inputs, so stale
+    predictions are ignored rather than served. mc_samples is part of the
+    tag too -- unlike the analytic path, Monte Carlo predictions
+    (cfg.baseline.cvae_mc_samples > 1, see baseline_cvae_network.py's
+    _mc_quantiles) are randomly drawn, so switching sample counts (or
+    on/off) must not serve predictions cached under a different setting.
+    """
+    return f"{CKPT_PATH.name}|steady-v1|mc{mc_samples}"
 
 SEQ_LEN = 288  # 24h @ 5min, fixed by the checkpoint's model.seq_len
 FREQ = "5min"
@@ -96,35 +114,11 @@ def load_model() -> tuple[torch.nn.Module, torch.device]:
     return model, device
 
 
-def resample_median_5min(p1_df: pd.DataFrame) -> pd.DataFrame:
-    """P1 net-metering registers (kW) -> Watts, median-aggregated onto the
-    5-min grid. Matches training-time resample_to_cadence()'s convention for
-    point/snapshot KW columns (exploratory-data-analysis/src/ingestion.py):
-    a +half-cadence timestamp shift to align to the interval midpoint, then
-    MEDIAN (not mean) aggregation -- using mean here was a train/inference
-    mismatch. Used for the display table and to seed the mixed-cadence
-    window's coarse (283-slot) history in build_data_list.
-    """
-    df = p1_df.set_index("timeStamp").sort_index()
-    raw = pd.DataFrame(
-        {
-            "consumption_w": df["netImportKw"] * 1000,
-            "generation_w": df["netExportKw"] * 1000,
-        }
-    )
-    shifted = raw.copy()
-    shifted.index = shifted.index + pd.Timedelta(minutes=2, seconds=30)
-    resampled = shifted.resample(FREQ).median()
-    operational = resampled["consumption_w"].notna().astype(float)
-    resampled = resampled.ffill().bfill()
-    resampled["operational"] = operational
-    return resampled.rename_axis("timestamp").reset_index()
-
-
 def to_one_minute_grid(p1_df: pd.DataFrame) -> pd.DataFrame:
     """Strict 1-min Watts grid, small-gap-filled, with a per-tick presence
     flag (1 = genuine reading, 0 = gap-filled) -- the native-cadence feed
-    for the mixed-cadence window's fine (5-slot) tail in build_data_list."""
+    for build_data_list's mixed-cadence windows (both the fine 5-slot tail
+    and, median-aged, the coarse 283-slot history)."""
     df = p1_df.set_index("timeStamp").sort_index()
     raw = pd.DataFrame(
         {
@@ -139,70 +133,73 @@ def to_one_minute_grid(p1_df: pd.DataFrame) -> pd.DataFrame:
     return grid.rename_axis("timestamp").reset_index()
 
 
-def build_data_list(
-    seed_5min: pd.DataFrame, one_min: pd.DataFrame, transform: Transform, eval_start, eval_end
-) -> tuple[list[Data], list]:
-    """Mixed-cadence window per target: the 283 older slots are the genuine
-    5-min-median history (from resample_median_5min); the 5 most-recent
-    slots are real 1-min-native ticks, not another 5-min aggregate -- using
-    custom_graphgym.eval.streaming_harness.WindowState for the coarse/fine
-    aging mechanics rather than reimplementing the median-aging rule.
-    One WindowState per channel (consumption, generation, operational) --
-    export is also 1-min-native at the P1 meter, so it gets the same
-    mixed-cadence treatment as import (unlike the original robustness
-    study, where "generation" meant inverter data with a true 5-min
-    ceiling).
+# Ticks a WindowState must absorb before its seed has fully aged out:
+# COARSE_LEN agings (FINE_LEN ticks each) refill `coarse`, and `fine` is
+# all-real long before that. From then on the window is a pure function of
+# the 1-min ticks -- independent of where pushing started.
+WARMUP_TICKS = WindowState.COARSE_LEN * WindowState.FINE_LEN
 
-    eval_start must already be floor()'d to a 5-min boundary (done once in
-    run_disaggregation) so the target grid and WindowState's aging cadence
-    stay in lockstep.
+
+def build_data_list(
+    one_min: pd.DataFrame, transform: Transform, eval_start, eval_end, skip=frozenset(),
+) -> tuple[list[Data], list]:
+    """Mixed-cadence window per target: 283 coarse slots (each the median of
+    5 real 1-min ticks, aged out of `fine`) + the 5 most-recent real 1-min
+    ticks -- using custom_graphgym.eval.streaming_harness.WindowState for
+    the coarse/fine aging mechanics rather than reimplementing the
+    median-aging rule. One WindowState per channel (consumption,
+    generation, operational) -- export is also 1-min-native at the P1
+    meter, so it gets the same mixed-cadence treatment as import (unlike
+    the original robustness study, where "generation" meant inverter data
+    with a true 5-min ceiling).
+
+    Steady state only: ticks are pushed from the start of `one_min` (the
+    24h lookback before eval_start), and a target is emitted only once
+    WARMUP_TICKS have flushed the placeholder seed. Pushing starts on a
+    5-min clock boundary, so coarse groups are clock-aligned too. Together
+    that makes each target's window -- and so its prediction -- depend only
+    on the target time and the data, not on which eval window it was
+    requested in. That's what lets run_disaggregation cache predictions
+    per target (a seed taken at eval_start would change every past
+    target's window each time a rolling live window moves).
+
+    Targets in `skip` (already cached) still advance the windows but aren't
+    materialized -- building each Data is the expensive part of this loop.
     """
-    seed = seed_5min[
-        (seed_5min["timestamp"] >= eval_start - pd.Timedelta(hours=24))
-        & (seed_5min["timestamp"] < eval_start)
-    ]
-    if len(seed) != WindowState.TOTAL_LEN:
-        raise ValueError(
-            f"need exactly {WindowState.TOTAL_LEN} 5-min bins of history "
-            f"before eval_start, got {len(seed)} -- insufficient P1 history fetched"
-        )
-    w_cons = WindowState(seed["consumption_w"].tolist())
-    w_gen = WindowState(seed["generation_w"].tolist())
-    w_op = WindowState(seed["operational"].tolist())
+    ticks = one_min[one_min["timestamp"] <= eval_end].sort_values("timestamp")
+    ticks = ticks[ticks["timestamp"] >= ticks["timestamp"].iloc[0].ceil("5min")]
+
+    # Placeholder seed -- fully aged out before any target is emitted.
+    placeholder = [0.0] * WindowState.TOTAL_LEN
+    w_cons = WindowState(placeholder)
+    w_gen = WindowState(placeholder)
+    w_op = WindowState(placeholder)
 
     # Parallel timestamp bookkeeping for the two deques WindowState itself
     # maintains (it tracks values only, not which real timestamp each slot
     # represents). `fine_ts` advances every tick; `coarse_ts` advances only
-    # on the same tick WindowState's own aging fires -- verified equivalent
-    # to its internal "_ticks_since_last_age == FINE_LEN" condition via
-    # (elapsed_minutes + 1) % FINE_LEN == 0, since both start counting from
-    # the same seed and advance in lockstep, one tick at a time.
-    seed_ts = seed["timestamp"].tolist()
-    coarse_ts_dq = deque(seed_ts[: WindowState.COARSE_LEN], maxlen=WindowState.COARSE_LEN)
-    fine_ts_dq = deque(seed_ts[WindowState.COARSE_LEN :], maxlen=WindowState.FINE_LEN)
-
-    ticks = one_min[
-        (one_min["timestamp"] >= eval_start) & (one_min["timestamp"] <= eval_end)
-    ].sort_values("timestamp")
+    # on the same tick WindowState's own aging fires (every FINE_LEN-th
+    # push). to_one_minute_grid's output is gap-free, so the push count is
+    # also the elapsed minutes.
+    coarse_ts_dq = deque([pd.NaT] * WindowState.COARSE_LEN, maxlen=WindowState.COARSE_LEN)
+    fine_ts_dq = deque([pd.NaT] * WindowState.FINE_LEN, maxlen=WindowState.FINE_LEN)
 
     data_list, target_timestamps = [], []
-    for row in ticks.itertuples(index=False):
+    for n_pushed, row in enumerate(ticks.itertuples(index=False), start=1):
         t = row.timestamp
         w_cons.push_tick(row.consumption_w)
         w_gen.push_tick(row.generation_w)
         w_op.push_tick(row.operational)
 
         fine_ts_dq.append(t)
-        elapsed_min = round((t - eval_start).total_seconds() / 60)
-        if (elapsed_min + 1) % WindowState.FINE_LEN == 0:
+        if n_pushed % WindowState.FINE_LEN == 0:
             coarse_ts_dq.append(t)
 
         # A prediction at every real 1-min tick, not just every 5th -- the
         # SM stream is 1-min-native and we want real-time nowcasting, not
         # 5-min-stratified output, even though the model's own history
-        # cadence is 5-min. Only gate: skip until `fine` holds 5 genuine
-        # real ticks (not leftover cold-start seed values).
-        if not w_cons.fine_is_all_real():
+        # cadence is 5-min.
+        if n_pushed < WARMUP_TICKS or t < eval_start or t in skip:
             continue
 
         ts = pd.DatetimeIndex(list(coarse_ts_dq) + list(fine_ts_dq))
@@ -269,6 +266,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-hours", type=int, default=24, help="how much history to predict PV for")
     p.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent / "data")
     p.add_argument("--sleep", type=float, default=0.5, help="seconds between API requests")
+    p.add_argument(
+        "--mc-samples", type=int, default=0,
+        help="Monte Carlo predictive samples for uncertainty (0/1 = analytic quantiles, the original behavior)",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
 
@@ -285,7 +286,7 @@ def get_site(client, p1_id: str) -> dh.Site:
 
 
 def run_disaggregation(
-    client, model, device, transform, site: dh.Site, eval_start, end, sleep: float = 0.5,
+    client, model, device, transform, site: dh.Site, eval_start, end, sleep: float = 0.5, mc_samples: int = 0,
 ) -> pd.DataFrame:
     """Core pipeline: cached fetch -> resample -> windowed inference ->
     comparison against true PV. Shared by the CLI and the Streamlit app.
@@ -302,7 +303,21 @@ def run_disaggregation(
     raw_solar_w is only fetched and populated when the site has an
     inverter -- otherwise it's left NaN throughout (comparison_metrics and
     the chart treat that as "omit", not an error).
+
+    mc_samples: forwarded to cfg.baseline.cvae_mc_samples right before
+    inference (not baked into load_model()/get_model()'s cached model
+    object) -- cfg is a global yacs singleton the network reads live in
+    forward(), so setting it once at model-load time and relying on
+    st.cache_resource's per-argument caching would be wrong: whichever
+    call set cfg last wins for every cached model, not just its own. 0/1
+    disables (the original deterministic analytic-quantiles path); >1
+    draws that many Monte Carlo predictive samples (see
+    baseline_cvae_network.py's _mc_quantiles) -- same output shape either
+    way, so nothing downstream needs to know which path ran.
     """
+    cfg.baseline.cvae_mc_samples = mc_samples
+    tag = _pred_cache_tag(mc_samples)
+
     # Floor to a 5-min boundary so the mixed-cadence target grid (built off
     # eval_start in build_data_list) stays in lockstep with WindowState's
     # 5-tick aging cadence -- "now" (today-mode in the app) isn't naturally
@@ -313,14 +328,27 @@ def run_disaggregation(
 
     log.info("fetching P1 history (%s to %s)", fetch_start, end)
     p1_df = cache.fetch_cached(client, "p1_graph", client.get_graph, [site.p1_id], site.p1_id, fetch_start, end, 1, sleep)
-    seed_5min = resample_median_5min(p1_df)
     one_min = to_one_minute_grid(p1_df)
 
-    data_list, target_ts = build_data_list(seed_5min, one_min, transform, eval_start, end)
-    if not data_list:
+    # Per-target prediction cache: build_data_list's windows are steady-state
+    # (see its docstring), so a target's prediction never changes once its
+    # minute is complete -- a live tick only runs the model on the new tail.
+    cached = cache.read_predictions(site.p1_id, tag, eval_start, end)
+    data_list, target_ts = build_data_list(one_min, transform, eval_start, end, skip=set(cached["timestamp"]))
+    if data_list:
+        log.info("running inference on %d target timesteps (%d cached)", len(data_list), len(cached))
+        new_df = run_inference(model, device, data_list, target_ts, transform)
+        # The newest 1-min tick may still be missing readings the API hasn't
+        # served yet (the next fetch picks them up) -- only cache targets
+        # whose own minute is complete, so the latest one gets recomputed.
+        complete = new_df[new_df["timestamp"] < end.floor("1min")]
+        cache.write_predictions(site.p1_id, tag, complete)
+        pred_df = pd.concat([cached, new_df], ignore_index=True) if len(cached) else new_df
+    elif len(cached):
+        pred_df = cached
+    else:
         raise ValueError("no target windows in eval range -- insufficient P1 history fetched")
-    log.info("running inference on %d target timesteps (1-min native, mixed-cadence 288-step window per tick)", len(data_list))
-    pred_df = run_inference(model, device, data_list, target_ts, transform)
+    pred_df = pred_df.sort_values("timestamp").reset_index(drop=True)
 
     if site.inverter_ids:
         log.info("fetching raw solar telemetry (%s to %s)", eval_start, end)
@@ -332,8 +360,7 @@ def run_disaggregation(
         merged["raw_solar_w"] = float("nan")
 
     # 1-min-native display columns, matching the prediction grid's own
-    # cadence -- not the 5-min median view (that's only used to seed the
-    # window's coarse history above).
+    # cadence.
     merged = merged.merge(one_min[["timestamp", "consumption_w", "generation_w"]], on="timestamp", how="left")
     return merged
 
@@ -361,7 +388,7 @@ def main() -> None:
     model, device = load_model()
     transform = Transform.load(TRANSFORM_PATH)
 
-    merged = run_disaggregation(client, model, device, transform, site, eval_start, end, args.sleep)
+    merged = run_disaggregation(client, model, device, transform, site, eval_start, end, args.sleep, args.mc_samples)
 
     out_path = args.out_dir / site.p1_id / "pv_disaggregation_comparison.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
