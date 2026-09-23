@@ -30,6 +30,16 @@ def set_cfg_baseline(cfg):
     cfg.baseline.cvae_kl_weight = 0.1
     cfg.baseline.cvae_daytime_threshold = 0.005
     cfg.baseline.cvae_pv_eps = 0.001
+    # 0/1 = disabled: eval decodes a single deterministic z=mu_z and derives
+    # quantiles analytically from its Normal/Beta heads (original behavior).
+    # >1 = Monte Carlo predictive quantiles at eval: draws this many z_k ~
+    # N(mu_z, sigma_z) (epistemic spread of the CVAE's own posterior, else
+    # collapsed to mu_z everywhere in this module), decodes each, draws one
+    # predictive sample per target from each decode (aleatoric spread), and
+    # takes empirical quantiles of the pooled samples -- see
+    # BaselineCVAENetwork._mc_quantiles. Never applied during training
+    # (cheap deterministic path stays on the hot loop).
+    cfg.baseline.cvae_mc_samples = 0
 
     # Linear baseline (per-node linear quantile regression, see baseline_linear.py)
     # 'window' = flattened seq_len-step history (the original default);

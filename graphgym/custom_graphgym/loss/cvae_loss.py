@@ -1,33 +1,10 @@
 import torch
-import torch.nn.functional as F
 
 import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_loss
 
-
-def _masked_gaussian_nll(mu, sigma, target, mask):
-    denom = mask.sum()
-    if denom < 1:
-        return torch.zeros((), device=mu.device)
-    nll = -torch.distributions.Normal(mu, sigma).log_prob(target)
-    return (nll * mask).sum() / denom
-
-
-def _masked_beta_nll(alpha, beta, target, mask):
-    denom = mask.sum()
-    if denom < 1:
-        return torch.zeros((), device=alpha.device)
-    nll = -torch.distributions.Beta(alpha, beta).log_prob(target)
-    return (nll * mask).sum() / denom
-
-
-def _masked_bce(logit, target, mask):
-    denom = mask.sum()
-    if denom < 1:
-        return torch.zeros((), device=logit.device)
-    bce = F.binary_cross_entropy_with_logits(logit, target, reduction="none")
-    return (bce * mask).sum() / denom
+from ._distributional_losses import masked_beta_nll, masked_bce, masked_gaussian_nll
 
 
 def _kl_divergence(mu, log_var):
@@ -78,16 +55,16 @@ def cvae_loss_complex(pred, true):
     total_loss = _kl_divergence(outs["mu_z"], outs["log_var_z"]) * cfg.baseline.cvae_kl_weight
 
     if "mu_load" in outs:
-        loss_load = _masked_gaussian_nll(
+        loss_load = masked_gaussian_nll(
             outs["mu_load"], outs["sigma_load"], y_load, mask
         )
         total_loss = total_loss + loss_load
 
     if "alpha" in outs:
-        loss_solar = _masked_beta_nll(
+        loss_solar = masked_beta_nll(
             outs["alpha"], outs["beta"], pv_clamped, day_target * mask
         )
-        loss_gate = _masked_bce(outs["gate_logit"], day_target, mask)
+        loss_gate = masked_bce(outs["gate_logit"], day_target, mask)
         total_loss = (
             total_loss
             + cfg.baseline.cvae_solar_weight * loss_solar

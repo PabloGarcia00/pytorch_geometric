@@ -1,13 +1,16 @@
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from scipy.stats import beta as scipy_beta
 
 import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_network
 
+from ..distributions.beta_gate import (
+    decode_beta_params,
+    decode_gaussian,
+    gaussian_quantiles,
+    zero_inflated_beta_quantiles,
+)
 from ..target_utils import active_targets
 
 _TIME_DIM = 6
@@ -41,6 +44,17 @@ class BaselineCVAENetwork(nn.Module):
     Normal/Beta each forward call), one block per entry of active_targets(),
     so the shared earne_mae_load/earne_mae_pv metrics keep working
     unmodified.
+
+    Uncertainty quantification: by default (cfg.baseline.cvae_mc_samples <=
+    1) eval decodes a single deterministic z=mu_z and derives quantiles
+    analytically (icdf/ppf) -- aleatoric-only, from the decoder heads.
+    Setting cvae_mc_samples > 1 switches eval to Monte Carlo predictive
+    quantiles (_mc_quantiles): multiple z_k ~ N(mu_z, sigma_z) are sampled
+    from the VAE posterior (epistemic), each decoded and sampled from
+    (aleatoric), and the pooled draws' empirical quantiles become pred --
+    same shape/columns either way, so nothing downstream needs to know
+    which path ran. Training is unaffected either way (always a single
+    reparameterized z, per the original VAE training objective).
     """
 
     def __init__(self, dim_in, dim_out, **kwargs):
@@ -136,19 +150,20 @@ class BaselineCVAENetwork(nn.Module):
         """Returns a dict with only the entries for active_targets():
         {"mu_load", "sigma_load"} if "load" is selected, and/or
         {"alpha", "beta", "gate_logit"} if "pv" is selected.
+
+        z/t_emb may carry an extra leading MC-sample dim ([K, N, ...], from
+        _mc_quantiles) on top of the usual [N, ...] -- every op here is
+        elementwise or acts on the last dim, so indexing uses `...` rather
+        than `:` to work unchanged in both cases.
         """
         zt = torch.cat([z, t_emb], dim=-1)
         out = {}
 
         if "load" in self.targets:
-            lp = self.load_head(zt)
-            out["mu_load"] = lp[:, 0]
-            out["sigma_load"] = F.softplus(lp[:, 1]) + 1e-4
+            out["mu_load"], out["sigma_load"] = decode_gaussian(self.load_head(zt))
 
         if "pv" in self.targets:
-            sp = self.solar_head(zt)
-            out["alpha"] = F.softplus(sp[:, 0]) + 1e-4
-            out["beta"] = F.softplus(sp[:, 1]) + 1e-4
+            out["alpha"], out["beta"] = decode_beta_params(self.solar_head(zt))
             out["gate_logit"] = self.gate_head(zt).squeeze(-1)
 
         return out
@@ -169,30 +184,69 @@ class BaselineCVAENetwork(nn.Module):
         out = {}
 
         if "load" in self.targets:
-            out["load"] = torch.distributions.Normal(
-                decoded["mu_load"].unsqueeze(-1), decoded["sigma_load"].unsqueeze(-1)
-            ).icdf(q.unsqueeze(0))  # [N, Q]
+            out["load"] = gaussian_quantiles(
+                decoded["mu_load"], decoded["sigma_load"], q
+            )  # [N, Q]
 
         if "pv" in self.targets:
-            gate_logit = decoded["gate_logit"]
-            p_day = torch.sigmoid(gate_logit)
-            p_night = 1.0 - p_day
-
-            q_np = q.cpu().numpy()[None, :]  # [1, Q]
-            p_day_np = p_day.detach().cpu().numpy()[:, None]  # [N, 1]
-            p_night_np = p_night.detach().cpu().numpy()[:, None]  # [N, 1]
-            alpha_np = decoded["alpha"].detach().cpu().numpy()[:, None]  # [N, 1]
-            beta_np = decoded["beta"].detach().cpu().numpy()[:, None]  # [N, 1]
-
-            q_eff = np.clip(
-                (q_np - p_night_np) / np.clip(p_day_np, 1e-6, None), 1e-6, 1 - 1e-6
-            )
-            pv_q_np = np.where(
-                q_np > p_night_np, scipy_beta.ppf(q_eff, alpha_np, beta_np), 0.0
-            )
-            out["pv"] = torch.tensor(pv_q_np, dtype=torch.float32, device=device)
+            out["pv"] = zero_inflated_beta_quantiles(
+                decoded["alpha"], decoded["beta"], decoded["gate_logit"], q
+            )  # [N, Q]
 
         return out
+
+    def _predictive_samples(self, decoded):
+        """One Monte Carlo draw per active target from the fitted
+        per-sample distributions in `decoded` (any leading batch shape,
+        e.g. [K, N]). Zero-inflates the PV draw by its own sampled daytime
+        indicator so MC samples respect the same day/night structure as
+        _quantiles()'s analytic zero-inflated Beta.
+        """
+        out = {}
+
+        if "load" in self.targets:
+            out["load"] = torch.distributions.Normal(
+                decoded["mu_load"], decoded["sigma_load"]
+            ).sample()
+
+        if "pv" in self.targets:
+            is_day = torch.bernoulli(torch.sigmoid(decoded["gate_logit"]))
+            pv_draw = torch.distributions.Beta(
+                decoded["alpha"], decoded["beta"]
+            ).sample()
+            out["pv"] = is_day * pv_draw
+
+        return out
+
+    def _mc_quantiles(self, mu_z, log_var_z, t_emb):
+        """Monte Carlo predictive quantiles: draws cfg.baseline.cvae_mc_samples
+        latent codes z_k ~ N(mu_z, sigma_z) -- the epistemic spread of the
+        CVAE's own posterior, which is otherwise collapsed to the point
+        estimate mu_z everywhere else in this module at eval time -- decodes
+        each into its own Normal/zero-inflated-Beta head, then draws one
+        predictive sample per target from each decode (aleatoric spread).
+        The pooled K samples therefore carry both uncertainty sources;
+        empirical quantiles (torch.quantile) replace the closed-form
+        icdf/ppf of _quantiles(), which only ever sees a single mu_z decode.
+
+        Returns a dict with only the entries for active_targets(), each
+        [N, Q] -- same shape/order _quantiles() returns, so forward()'s
+        pred assembly doesn't care which path produced it.
+        """
+        K = cfg.baseline.cvae_mc_samples
+        std_z = torch.exp(0.5 * log_var_z)
+        eps = torch.randn(K, *mu_z.shape, device=mu_z.device, dtype=mu_z.dtype)
+        z_samples = mu_z.unsqueeze(0) + std_z.unsqueeze(0) * eps  # [K, N, latent_dim]
+        t_emb_k = t_emb.unsqueeze(0).expand(K, *t_emb.shape)  # [K, N, time_emb_dim]
+
+        decoded_k = self.decode(z_samples, t_emb_k)  # each value: [K, N]
+        samples = self._predictive_samples(decoded_k)  # each value: [K, N]
+
+        q = torch.tensor(self.quantiles, dtype=torch.float32, device=mu_z.device)
+        return {
+            name: torch.quantile(y, q, dim=0).transpose(0, 1)  # [N, Q]
+            for name, y in samples.items()
+        }
 
     def forward(self, batch):
         x_in = torch.cat([batch.x, batch.operational], dim=-1)  # [N, T, C_in]
@@ -206,7 +260,10 @@ class BaselineCVAENetwork(nn.Module):
         z = self.reparameterize(mu_z, log_var_z) if self.training else mu_z
         decoded = self.decode(z, t_emb)
 
-        q_by_target = self._quantiles(decoded)
+        if not self.training and cfg.baseline.cvae_mc_samples > 1:
+            q_by_target = self._mc_quantiles(mu_z, log_var_z, t_emb)
+        else:
+            q_by_target = self._quantiles(decoded)
         pred = torch.cat([q_by_target[t] for t in self.targets], dim=1)
 
         batch.cvae_outputs = {**decoded, "mu_z": mu_z, "log_var_z": log_var_z}
