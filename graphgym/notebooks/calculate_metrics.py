@@ -78,6 +78,7 @@ _FLAT_SWEEP_GLOBS = {
     "coverage_eval_*": "coverage_eval",  # require_full_span True/False ablation
     "*_pw03": "physics_weight_nomask",  # mask_physics_impossible=False + physics_weight=0.3
     "res_eval_*": "resolution_eval",  # 5/30/60-min reprocessed-resolution ablation
+    "betagate_*": "beta_gate_ablation",  # earne_quantile vs earne_beta_gate head/loss, per encoder
     "trtr": "tstr_trts_eval",  # exact match — literal dir "results/trtr"
     "trts_*": "tstr_trts_eval",  # results/trts_{energydiff,faraday,guide_vae}
     "tstr_*": "tstr_trts_eval",  # results/tstr_{energydiff,faraday,guide_vae} +
@@ -206,6 +207,17 @@ def discover_manifest(results_root: Path | str = RESULTS_ROOT) -> pd.DataFrame:
                     # uses earne_temporal regardless, so this column is
                     # only informative when model_type == 'earne_network'.
                     "node_encoder_name": model_cfg.get("node_encoder_name"),
+                    # head_name/loss_fun: earne_quantile/earne_loss (direct
+                    # pinball regression) vs. earne_beta_gate/
+                    # earne_beta_gate_loss (Gaussian-load + zero-inflated-
+                    # Beta-PV). Only informative when model_type ==
+                    # 'earne_network' (same caveat as node_encoder_name
+                    # above) -- CVAE/KNN/Linear/SVR/st_sgc_caps configs
+                    # never set these keys and don't consume cfg.model.
+                    # head_name/loss_fun at all, so they backfill to the
+                    # meaningless default below.
+                    "head_name": model_cfg.get("head_name", "earne_quantile"),
+                    "loss_fun": model_cfg.get("loss_fun", "earne_loss"),
                     "physics_weight": train_cfg.get("physics_weight"),
                     "dim_in": model_cfg.get("dim_in"),
                     "n_quantiles": model_cfg.get("n_quantiles"),
@@ -229,6 +241,8 @@ def discover_manifest(results_root: Path | str = RESULTS_ROOT) -> pd.DataFrame:
 STRAT_COLUMNS = [
     "model_type",
     "node_encoder_name",  # only informative when model_type == 'earne_network' (GNN/LSTM/MLP)
+    "head_name",  # only informative when model_type == 'earne_network' -- see discover_manifest()
+    "loss_fun",  # ditto
     "dual_read",
     "weather_mode",
     "graph_mode",
