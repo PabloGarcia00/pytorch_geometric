@@ -46,8 +46,9 @@ from custom_graphgym.metric.regression import DisaggregationMetrics  # noqa: E40
 
 # ── config — mirrors the 15-min dual-read CVAE config scratch_sundael_transfer.py
 # reproduces (and that the bulk of the fleet is scored under) ────────────────
-GOLD = "/home/llan/projects/messm/pytorch_geometric/fleet_gold_layer.parquet"
-PRED_DIR = Path(__file__).resolve().parent.parent / "results" / "sundael_transfer"
+_REPO = Path(__file__).resolve().parent.parent
+GOLD = os.environ.get("SUNDAEL_GOLD", str(_REPO.parent / "fleet_gold_layer.parquet"))
+PRED_DIR = Path(os.environ.get("SUNDAEL_OUT", str(_REPO / "results" / "sundael_transfer")))
 START = dt.datetime(2023, 4, 3, tzinfo=dt.timezone.utc)
 END = START.replace(year=2026)
 SEQ_LEN = 96

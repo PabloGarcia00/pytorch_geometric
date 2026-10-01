@@ -5,12 +5,22 @@ meter channels onto Sundael's inputs, runs PVDisaggregator, and scores its
 generation/consumption estimates against the gold-layer ground truth
 (inverter_w = gross PV, load_w = gross load) on the test window.
 
-Run with Sundael's venv (correct pandas<3, numba, etc.):
-    /home/llan/projects/messm/sundael/.venv/bin/python scratch_sundael_transfer.py
+sundael is vendored at third_party/sundael/ (MPL-2.0, see its VENDOR.md), so
+this needs no external sundael checkout -- only a dedicated venv with
+sundael's deps (pandas<3, numba, ...), which conflict with graphgym's main
+.venv. Build it once, then run:
+
+    uv venv --python 3.13 .venv-sundael
+    .venv-sundael/bin/python -m pip install -r third_party/sundael/requirements.txt
+    .venv-sundael/bin/python scratch_sundael_transfer.py
+
+Data paths default to this repo's layout but can be overridden for the server
+via the SUNDAEL_GOLD / SUNDAEL_COORDS / SUNDAEL_OUT env vars.
 """
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sys
 from pathlib import Path
 
@@ -18,12 +28,18 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-sys.path.insert(0, "/home/llan/projects/messm/sundael/src")
+# Vendored sundael -- put third_party/ (not the external repo) on sys.path so
+# `import sundael` resolves to third_party/sundael/.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "third_party"))
 from sundael import PVConfig, PVDisaggregator  # noqa: E402
 
-GOLD = "/home/llan/projects/messm/pytorch_geometric/fleet_gold_layer.parquet"
-COORDS = "/home/llan/projects/messm/exploratory-data-analysis/assets/zipcode_coordinate.csv"
-OUT = Path("/home/llan/projects/messm/pytorch_geometric/graphgym/results/sundael_transfer")
+_REPO = Path(__file__).resolve().parent
+GOLD = os.environ.get("SUNDAEL_GOLD", str(_REPO.parent / "fleet_gold_layer.parquet"))
+COORDS = os.environ.get(
+    "SUNDAEL_COORDS",
+    "/home/llan/projects/messm/exploratory-data-analysis/assets/zipcode_coordinate.csv",
+)
+OUT = Path(os.environ.get("SUNDAEL_OUT", str(_REPO / "results" / "sundael_transfer")))
 OUT.mkdir(parents=True, exist_ok=True)
 
 # graphgym CVAE-config knobs that define the test set

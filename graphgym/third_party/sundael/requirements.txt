@@ -1,0 +1,28 @@
+# Pinned runtime dependencies for the vendored sundael package (see VENDOR.md).
+# Versions mirror the upstream sundael .venv at vendoring time (sundael v1.0.0,
+# commit 50e75ab). Install into a DEDICATED venv -- these conflict with
+# graphgym's main .venv (which runs pandas 3 / numpy 2.5; sundael needs
+# pandas<3 and numba, which doesn't support numpy that new).
+#
+#   uv venv --python 3.13 .venv-sundael
+#   .venv-sundael/bin/python -m pip install -r third_party/sundael/requirements.txt
+#
+# Then run the disaggregation step with that interpreter:
+#   .venv-sundael/bin/python scratch_sundael_transfer.py
+#
+# Scoring (notebooks/sundael_metrics.py) does NOT need this -- run it in
+# graphgym's main .venv as usual.
+numba==0.62.1
+llvmlite==0.45.1
+numpy==2.3.5
+pandas==2.3.3
+pandera==0.32.1
+polars==1.43.2
+pyarrow==25.0.1
+pvlib==0.15.2
+scipy==1.18.0
+seaborn==0.13.2
+structlog==26.1.0
+pydantic==2.13.4
+joblib==1.5.3
+requests==2.34.2
